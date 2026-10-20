@@ -49,6 +49,9 @@ export async function startFork(chainId: number) {
     '--accounts', '5', '--balance', '10000', '--no-storage-caching',
     '--derivation-path', "m/44'/60'/21600'/0/",
     '--retries', '2', '--timeout', '20000',
+    // Unpruned, Anvil writes block states to ~/.foundry/anvil/tmp and leaves them when stopped.
+    // Pruning keeps the newest 500 in memory (Anvil's default) and writes none to disk.
+    '--prune-history', '500',
   ], { stdio: ['ignore', 'ignore', 'pipe'] })
   let processError: Error | undefined
   processHandle.on('error', error => { processError = error })
