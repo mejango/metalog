@@ -1,4 +1,4 @@
-FROM node:26.7.0-alpine AS build
+FROM node:26.12.1-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
@@ -11,7 +11,7 @@ ARG NEXT_PUBLIC_SIGNA_ENABLED=false
 ARG NEXT_PUBLIC_JBCENTER_URL
 RUN npm run build
 
-FROM node:26.7.0-alpine
+FROM node:26.12.1-alpine
 WORKDIR /app
 ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=3000 NEXT_TELEMETRY_DISABLED=1
 COPY --from=build --chown=node:node /app/.next/standalone ./
