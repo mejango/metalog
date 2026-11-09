@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createConnectController, passkeyOption, type ConnectOption } from '@bananapus/nana-sdk-connect/core'
-import { JBConnectModal } from '@bananapus/nana-sdk-connect/react'
+import { createConnectController, passkeyOption, type ConnectOption } from '@me.jango/signa/core'
+import { JBConnectModal } from '@me.jango/signa/react'
 import { useConnect } from 'wagmi'
 import { SIGNA_ENABLED } from '@/providers/Providers'
 
