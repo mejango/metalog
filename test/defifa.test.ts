@@ -18,8 +18,9 @@ import { buildProjectMetadata } from '../src/domain/market-metadata'
 import { loadMarketMetadata, publishMarketMetadata, type PublishedMarketMetadata } from '../src/lib/market-metadata'
 
 const mocks = vi.hoisted(() => ({
-  getBlock: vi.fn(), getChainId: vi.fn(), getCode: vi.fn(), readContract: vi.fn(), publishMetadata: vi.fn(), loadMetadata: vi.fn(),
+  getBlock: vi.fn(), getChainId: vi.fn(), getCode: vi.fn(), readContract: vi.fn(), publishMetadata: vi.fn(), loadMetadata: vi.fn(), bendystraw: vi.fn(),
 }))
+vi.mock('../src/lib/bendystraw', () => ({ bendystraw: mocks.bendystraw }))
 vi.mock('../src/lib/market-metadata', () => ({
   publishMarketMetadata: mocks.publishMetadata, loadMarketMetadata: mocks.loadMetadata,
 }))
@@ -90,13 +91,26 @@ function creationReceipt(): TransactionReceipt {
   }] } as unknown as TransactionReceipt
 }
 
-function mintReceipt(tierIds: number[]): TransactionReceipt {
-  return { status: 'success', blockNumber: 100n, logs: tierIds.map((tierId, index) => ({
-    address: hook, data: '0x', topics: encodeEventTopics({ abi: DEFIFA_ABI.DefifaHook, eventName: 'Transfer', args: {
-      from: zeroAddress, to: account, tokenId: BigInt(tierId) * 1_000_000_000n + BigInt(index + 1),
-    } }),
-  })) } as unknown as TransactionReceipt
+/** One ERC-1155 TransferSingle mint per listed range ID, as a batch of single positions. */
+function mintLogs(tierIds: number[]) {
+  return tierIds.map(tierId => ({
+    address: hook, data: encodeAbiParameters([{ type: 'uint256' }, { type: 'uint256' }], [BigInt(tierId), 1n]),
+    topics: encodeEventTopics({ abi: DEFIFA_ABI.DefifaHook, eventName: 'TransferSingle', args: { operator: account, from: zeroAddress, to: account } }),
+  }))
 }
+
+function mintReceipt(tierIds: number[]): TransactionReceipt {
+  return { status: 'success', blockNumber: 100n, logs: mintLogs(tierIds) } as unknown as TransactionReceipt
+}
+
+/** The 1155 pay payload: delegate, ascending range IDs and a count for each. */
+function payMetadata(delegate: Address, expanded: number[]): Hex {
+  const ids = [...new Set(expanded)]
+  return createHookMetadata([hookMetadataId(deployment.implementation, 'pay')], [encodeAbiParameters(
+    [{ type: 'address' }, { type: 'uint16[]' }, { type: 'uint256[]' }],
+    [delegate, ids, ids.map(id => BigInt(expanded.filter(item => item === id).length))])])
+}
+const PAY_TYPES = [{ type: 'address' }, { type: 'uint16[]' }, { type: 'uint256[]' }] as const
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -157,6 +171,7 @@ beforeEach(() => {
       case 'baseURI': return alteredBaseUri ?? ''
       case 'defaultAttestationDelegate': return observedDelegate
       case 'attestationStartTimeOf': return BigInt(definition.resolvesAt)
+      case 'refereeOf': return deployment.referee
       case 'tiersOf': return observedRanges.map(range => ({
         id: range.tierId, encodedIpfsUri: alteredTierHash === range.tierId ? keccak256(stringToHex('unexpected tier CID')) : (publishedByUri.get(uri)?.encodedTierUris[range.tierId - 1] ?? zeroHash), price: observedPrice, reserveFrequency: 0, initialSupply: 999_999_999, remainingSupply: remaining,
       }))
@@ -295,11 +310,9 @@ describe('Defifa launch calldata and fresh state', () => {
     const allocation = allocateManualPositions(coefficients, ranges, [1, 0, 1])
     const entry = await prepareEntry(market, allocation, account, coefficients)
     const decoded = decodeFunctionData({ abi: DEFIFA_ABI.JBMultiTerminal, data: entry.data })
-    const [delegate] = decodeAbiParameters([{ type: 'address' }, { type: 'uint16[]' }], `0x${(decoded.args![6] as Hex).slice(130)}`)
+    const [delegate] = decodeAbiParameters(PAY_TYPES, `0x${(decoded.args![6] as Hex).slice(130)}`)
     expect(delegate).toBe(hook)
-    expect(decoded.args![6]).toBe(createHookMetadata([hookMetadataId(deployment.implementation, 'pay')], [
-      encodeAbiParameters([{ type: 'address' }, { type: 'uint16[]' }], [hook, [1, 3]]),
-    ]))
+    expect(decoded.args![6]).toBe(payMetadata(hook, [1, 3]))
     expect(entry.details).toContainEqual({ label: 'Voting address', value: hook })
     expect(entry.details?.find(detail => detail.label === 'Voting power')?.value).toContain('all your existing')
     await expect(verifyDefifaTransactionReceipt(entry, mintReceipt([1, 3]))).resolves.toBeUndefined()
@@ -317,9 +330,9 @@ describe('Defifa launch calldata and fresh state', () => {
     expect(data.start).toBe(definition.entryClosesAt)
     expect(data.mintPeriodDuration).toBe(3_600)
     expect(data.refundPeriodDuration).toBe(0)
-    expect(data.attestationStartTime).toBe(BigInt(definition.resolvesAt))
     expect(data.scorecardTimeout).toBe(86_400 + 604_800)
-    expect(data.attestationGracePeriod).toBe(86_400n)
+    expect(data.referee).toBe(deployment.referee)
+    expect(decodeAbiParameters([{ type: 'uint256' }, { type: 'uint256' }], data.refereeData as Hex)).toEqual([BigInt(definition.resolvesAt), 86_400n])
     expect(data.defaultAttestationDelegate).toBe(zeroAddress)
     expect(data.splits).toEqual([])
     expect(data.token).toEqual({ token: NATIVE_TOKEN, decimals: 18, currency: 1 })
@@ -358,9 +371,8 @@ describe('Defifa launch calldata and fresh state', () => {
     const entry = await prepareEntry(market, preview.allocation, account, preview.distribution.coefficients)
     const payment = decodeFunctionData({ abi: DEFIFA_ABI.JBMultiTerminal, data: entry.data })
     const metadata = payment.args![6] as Hex
-    const [, ids] = decodeAbiParameters([{ type: 'address' }, { type: 'uint16[]' }], `0x${metadata.slice(130)}`)
     const expectedIds = preview.allocation.tierIds.flatMap((id, index) => Array<number>(preview.allocation.quantities[index]).fill(id))
-    expect(ids).toEqual(expectedIds)
+    expect(metadata).toBe(payMetadata(account, expectedIds))
     await expect(verifyDefifaTransactionReceipt(entry, mintReceipt(expectedIds))).resolves.toBeUndefined()
     uri = encodeMarketDefinition({ ...custom, rangeWidth: 1 })
     await expect(readMarket(chainId, '7')).rejects.toThrow('onchain ranges')
@@ -398,8 +410,7 @@ describe('Defifa launch calldata and fresh state', () => {
     expect(preview.allocation.quantities).toEqual([1, 26, 23, 12, 33, 5])
     const expectedIds = preview.allocation.tierIds.flatMap((id, index) => Array<number>(preview.allocation.quantities[index]).fill(id))
     const payment = decodeFunctionData({ abi: DEFIFA_ABI.JBMultiTerminal, data: entry.data })
-    const [, ids] = decodeAbiParameters([{ type: 'address' }, { type: 'uint16[]' }], `0x${(payment.args![6] as Hex).slice(130)}`)
-    expect(ids).toEqual(expectedIds)
+    expect(payment.args![6]).toBe(payMetadata(account, expectedIds))
     expect(entry.value).toBe(BigInt(customDefinition.unitPriceWei) * 100n)
     await expect(verifyDefifaTransactionReceipt(entry, mintReceipt(expectedIds))).resolves.toBeUndefined()
 
@@ -448,11 +459,18 @@ describe('Defifa market reads and curve entry', () => {
     expect(market.stage).toBe('entry')
     expect(market.potWei).toBe('777')
     expect(mocks.readContract.mock.calls.every(([read]) => read.blockNumber === 100n)).toBe(true)
+    mocks.bendystraw.mockResolvedValue({ defifaGames: { items: [] } })
     expect(await listMarkets(chainId)).toEqual({ markets: [], errors: [] })
     process.env.METALOG_MARKETS = 'bad,8453:7,84532:8'
     const listed = await listMarkets(chainId)
     expect(listed.markets).toHaveLength(1)
     expect(listed.errors).toHaveLength(1)
+    // Discovered games: this deployment's are read on chain; another deployer's are never read.
+    delete process.env.METALOG_MARKETS
+    mocks.bendystraw.mockResolvedValue({ defifaGames: { items: [{ projectId: 7, deployer: deployment.deployer }, { projectId: 9, deployer: hook }] } })
+    expect((await listMarkets(chainId)).markets.map(market => market.projectId)).toEqual(['7'])
+    mocks.bendystraw.mockRejectedValue(new Error('down'))
+    expect((await listMarkets(chainId)).errors).toEqual(['Recent markets could not be listed. Configured markets are still shown.'])
     uri = encodeMarketDefinition({ ...definition, entryClosesAt: definition.entryClosesAt + 1 })
     await expect(readMarket(chainId, '7')).rejects.toThrow('onchain entry times')
   })
@@ -472,14 +490,12 @@ describe('Defifa market reads and curve entry', () => {
     const metadata = args[6] as Hex
     expect(`0x${metadata.slice(66, 74)}`).toBe(hookMetadataId(deployment.implementation, 'pay'))
     expect(`0x${metadata.slice(66, 74)}`).not.toBe(hookMetadataId(hook, 'pay'))
-    const [delegate, ids] = decodeAbiParameters([{ type: 'address' }, { type: 'uint16[]' }], `0x${metadata.slice(130)}`)
+    const [delegate, ids, counts] = decodeAbiParameters(PAY_TYPES, `0x${metadata.slice(130)}`)
     expect(delegate).toBe(account)
     const expanded = allocation.tierIds.flatMap((id, index) => Array<number>(allocation.quantities[index]).fill(id))
-    expect(ids).toEqual(expanded)
-    expect(metadata).toBe(createHookMetadata([hookMetadataId(deployment.implementation, 'pay')], [
-      encodeAbiParameters([{ type: 'address' }, { type: 'uint16[]' }], [account, expanded]),
-    ]))
-    expect(ids).toHaveLength(20)
+    expect(ids).toEqual([...new Set(expanded)])
+    expect(metadata).toBe(payMetadata(account, expanded))
+    expect(counts.reduce((sum, count) => sum + count, 0n)).toBe(20n)
     now = definition.entryClosesAt
     await expect(tx.reverify!()).rejects.toThrow('not accepting entries')
   })
@@ -520,9 +536,10 @@ describe('Defifa market reads and curve entry', () => {
       mode: 'manual', quantities: [7, 0, 3], count: 10,
     })
     const ids = [1, 1, 1, 1, 1, 1, 1, 3, 3, 3]
-    const [delegate, encodedIds] = decodeAbiParameters([{ type: 'address' }, { type: 'uint16[]' }], `0x${(args[6] as Hex).slice(130)}`)
+    const [delegate, encodedIds, counts] = decodeAbiParameters(PAY_TYPES, `0x${(args[6] as Hex).slice(130)}`)
     expect(delegate).toBe(account)
-    expect(encodedIds).toEqual(ids)
+    expect(encodedIds).toEqual([1, 3])
+    expect(counts).toEqual([7n, 3n])
     expect(tx.details).toContainEqual({ label: ranges[0].label, value: '7' })
     expect(tx.details).toContainEqual({ label: ranges[2].label, value: '3' })
     expect(() => tx.verifyReceipt!(mintReceipt(ids))).not.toThrow()
@@ -576,10 +593,7 @@ describe('Defifa market reads and curve entry', () => {
     const coefficients = coefficientsFromMoments(0, 50)
     const allocation = allocatePositions(coefficients, ranges, 3)
     const tx = await prepareEntry(market, allocation, account, coefficients)
-    const ids = allocation.tierIds.flatMap((tierId, index) => Array.from({ length: allocation.quantities[index] }, (_, n) => BigInt(tierId) * 1_000_000_000n + BigInt(n + 1)))
-    const logs = ids.map(tokenId => ({ address: hook, data: '0x', topics: encodeEventTopics({
-      abi: DEFIFA_ABI.DefifaHook, eventName: 'Transfer', args: { from: zeroAddress, to: account, tokenId },
-    }) }))
+    const logs = mintLogs(allocation.tierIds.flatMap((tierId, index) => Array<number>(allocation.quantities[index]).fill(tierId)))
     const receipt = { status: 'success', blockNumber: 100n, logs } as unknown as TransactionReceipt
     expect(() => tx.verifyReceipt!(receipt)).not.toThrow()
     expect(() => tx.verifyReceipt!({ ...receipt, logs: receipt.logs.slice(1) })).toThrow('complete reviewed')

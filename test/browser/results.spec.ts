@@ -7,11 +7,11 @@ import { buildObservationPreset } from '../../src/domain/observation-presets'
 const account = '0x1111111111111111111111111111111111111111'
 const definition = validateMarket({ ...EXAMPLE_MARKET, rangeCount: 3, rangeWidth: 1, rangeBoundaries: undefined, source: buildObservationPreset('ETH-USD', '1d').source })
 const snapshot: LifecycleSnapshot = {
-  market: { chainId: 8453, projectId: '27', hook: account, governor: account, definition, ranges: marketRanges(definition),
+  market: { chainId: 8453, projectId: '27', hook: account, governor: account, referee: account, definition, ranges: marketRanges(definition),
     phase: 3, stage: 'settlement', blockNumber: '100', blockTimestamp: definition.resolvesAt + 1, potWei: '4000000000000',
     tiers: [1, 2, 3].map(tierId => ({ tierId, supply: '2', entrySupply: '2', priceWei: definition.unitPriceWei, remainingSupply: '999999999' })),
     ratifiedScorecardId: null, ratifiedWeights: null, cashOutWeightTotal: '1000000000000000000', commitmentsFulfilled: false, noContestTriggered: false },
-  account: null, inventory: { tokens: [], totalOwned: '0', totalCandidates: '0', nextCursor: null, complete: true }, delegates: [],
+  account: null, positions: [], delegates: [],
   scorecards: [], scorecardsNextCursor: '50', scorecardsComplete: false, attestationGraceSeconds: 86400, timelockSeconds: 3600,
   noContestAfter: definition.resolvesAt + 1000000, canSubmitScorecard: true, canDelegate: false, canFulfill: false, canTriggerNoContest: false, cashOutMode: null,
 }

@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { parseAbi, parseEventLogs, zeroAddress, type Address, type TransactionReceipt } from 'viem'
+import { parseAbi, zeroAddress, type Address, type TransactionReceipt } from 'viem'
 import { allocateManualPositions } from '../../src/domain/allocation'
 import { coefficientsFromMoments } from '../../src/domain/distribution'
 import { validateMarket, type MarketDefinition } from '../../src/domain/market'
 import {
-  createdMarketId, DEFIFA_ABI, prepareCreateMarket, prepareEntry, readMarket, verifyDefifaTransactionReceipt,
+  createdMarketId, prepareCreateMarket, prepareEntry, readMarket, receiptMoves, verifyDefifaTransactionReceipt,
   type MarketSnapshot,
 } from '../../src/lib/defifa'
 import { verifyDefifaDeployment } from '../../src/lib/defifa-deployment'
@@ -121,10 +121,8 @@ describe.each(forkChainIds)('canonical Defifa contracts on local chain %i fork',
     expect(recovered.status).toBe('success')
     expect(environment.send).toHaveBeenCalledTimes(1)
     expect(readPendingTransaction(environment.storage)).toBeNull()
-    const mints = parseEventLogs({ abi: DEFIFA_ABI.DefifaHook, eventName: 'Transfer', logs: recovered.logs })
-      .filter(log => log.address.toLowerCase() === market.hook.toLowerCase()
-        && (log.args as { from: Address }).from === zeroAddress)
-    expect(mints).toHaveLength(6)
+    const mints = receiptMoves(market.hook, recovered).filter(move => move.from === zeroAddress)
+    expect(mints.reduce((sum, move) => sum + move.value, 0n)).toBe(6n)
     market = await readMarket(chainId, market.projectId)
     expect(market.tiers.map(tier => tier.supply)).toEqual(['2', '2', '2'])
     expect(market.potWei).toBe((BigInt(definition.unitPriceWei) * 6n).toString())
@@ -135,29 +133,24 @@ describe.each(forkChainIds)('canonical Defifa contracts on local chain %i fork',
     const secondEntry = allocateManualPositions(coefficients, market.ranges, [1, 1, 1])
     await execute(await prepareEntry(market, secondEntry, fork.accounts[1], coefficients))
     let holder = await readLifecycle(chainId, market.projectId, fork.accounts[0])
-    expect(holder.inventory.complete).toBe(true)
-    expect(holder.inventory.tokens).toHaveLength(6)
+    expect(holder.positions).toEqual([{ tierId: 1, count: 2 }, { tierId: 2, count: 2 }, { tierId: 3, count: 2 }])
     expect(holder.cashOutMode).toBe('refund')
-    const refundId = holder.inventory.tokens[0].tokenId
-    const refund = await readCashOutQuote(holder.market, [refundId], fork.accounts[0])
+    const refund = await readCashOutQuote(holder.market, [{ tierId: 1, count: 1 }], fork.accounts[0])
     expect(refund.reclaimWei).toBe(definition.unitPriceWei)
     await execute(await prepareLifecycleAction(holder.market, {
-      kind: 'cash-out', tokenIds: [refundId], minReclaimedWei: refund.reclaimWei,
+      kind: 'cash-out', positions: [{ tierId: 1, count: 1 }], minReclaimedWei: refund.reclaimWei,
     }, fork.accounts[0]))
     holder = await readLifecycle(chainId, market.projectId, fork.accounts[0])
-    expect(holder.inventory.tokens.some(token => token.tokenId === refundId)).toBe(false)
-    expect(holder.inventory.totalCandidates).toBe('9')
-    expect(holder.inventory.totalOwned).toBe('5')
+    expect(holder.positions).toEqual([{ tierId: 1, count: 1 }, { tierId: 2, count: 2 }, { tierId: 3, count: 2 }])
     expect(holder.market.potWei).toBe((BigInt(definition.unitPriceWei) * 8n).toString())
 
-    const transferId = holder.inventory.tokens.at(-1)!.tokenId
-    await execute(await prepareLifecycleAction(holder.market, { kind: 'transfer', tokenId: transferId, to: fork.accounts[2] }, fork.accounts[0]))
+    await execute(await prepareLifecycleAction(holder.market, { kind: 'transfer', tierId: 3, count: 1, to: fork.accounts[2] }, fork.accounts[0]))
     const recipient = await readLifecycle(chainId, market.projectId, fork.accounts[2])
-    expect(recipient.inventory.tokens.map(token => token.tokenId)).toEqual([transferId])
+    expect(recipient.positions).toEqual([{ tierId: 3, count: 1 }])
     await execute(await prepareLifecycleAction(recipient.market, {
-      kind: 'delegate', tierIds: [recipient.inventory.tokens[0].tierId], delegatee: fork.accounts[2],
+      kind: 'delegate', tierIds: [3], delegatee: fork.accounts[2],
     }, fork.accounts[2]))
-    await expect(prepareLifecycleAction(recipient.market, { kind: 'transfer', tokenId: transferId, to: fork.accounts[3] }, fork.accounts[0])).rejects.toThrow(/owns/)
+    await expect(prepareLifecycleAction(recipient.market, { kind: 'transfer', tierId: 3, count: 2, to: fork.accounts[3] }, fork.accounts[0])).rejects.toThrow(/holds/)
 
     await fork.advanceTo(definition.entryClosesAt + 2)
     market = await readMarket(chainId, market.projectId)
@@ -187,8 +180,17 @@ describe.each(forkChainIds)('canonical Defifa contracts on local chain %i fork',
       await execute(await prepareLifecycleAction(lifecycle.market, { kind: 'attest', scorecardId: cardId }, account))
     }
     lifecycle = await readLifecycle(chainId, market.projectId, fork.accounts[0])
-    await expect(prepareLifecycleAction(lifecycle.market, { kind: 'ratify', weights }, fork.accounts[0])).rejects.toThrow(/requirements/)
-    await fork.advanceTo(lifecycle.scorecards[0].gracePeriodEnds + lifecycle.timelockSeconds + 2)
+    expect(BigInt(lifecycle.scorecards[0].attestationCount)).toBeGreaterThanOrEqual(BigInt(lifecycle.scorecards[0].quorum))
+    await expect(prepareLifecycleAction(lifecycle.market, { kind: 'forward', weights }, fork.accounts[0])).rejects.toThrow(/quorum after its grace/)
+    await expect(prepareLifecycleAction(lifecycle.market, { kind: 'ratify', weights }, fork.accounts[0])).rejects.toThrow(/timelock/)
+    await fork.advanceTo(lifecycle.scorecards[0].gracePeriodEnds + 2)
+    lifecycle = await readLifecycle(chainId, market.projectId, fork.accounts[0])
+    expect(lifecycle.scorecards[0]).toMatchObject({ stateName: 'Succeeded', canForward: true, forwarded: false })
+    await execute(await prepareLifecycleAction(lifecycle.market, { kind: 'forward', weights }, fork.accounts[0]))
+    lifecycle = await readLifecycle(chainId, market.projectId, fork.accounts[0])
+    expect(lifecycle.scorecards[0]).toMatchObject({ stateName: 'Queued', forwarded: true, canRatify: false })
+    await expect(prepareLifecycleAction(lifecycle.market, { kind: 'ratify', weights }, fork.accounts[0])).rejects.toThrow(/timelock/)
+    await fork.advanceTo(lifecycle.scorecards[0].ratifiableAt! + 2)
     lifecycle = await readLifecycle(chainId, market.projectId, fork.accounts[0])
     expect(lifecycle.scorecards[0].canRatify).toBe(true)
     await execute(await prepareLifecycleAction(lifecycle.market, { kind: 'ratify', weights }, fork.accounts[0]))
@@ -197,7 +199,7 @@ describe.each(forkChainIds)('canonical Defifa contracts on local chain %i fork',
     expect(holder.market.ratifiedWeights).toEqual(weights.map(item => ({ tierId: item.tierId, weight: item.weight })))
     expect(holder.market.commitmentsFulfilled).toBe(true)
     expect(holder.cashOutMode).toBe('cash-out')
-    const ids = holder.inventory.tokens.map(token => token.tokenId)
+    const ids = holder.positions
     const quote = await readCashOutQuote(holder.market, ids, fork.accounts[0])
     expect(BigInt(quote.reclaimWei)).toBeGreaterThan(0n)
     const previousPot = BigInt(holder.market.potWei)
@@ -206,11 +208,11 @@ describe.each(forkChainIds)('canonical Defifa contracts on local chain %i fork',
       address, abi: tokenAbi, functionName: 'balanceOf', args: [fork.accounts[0]],
     })))
     const rewardsBefore = await balances()
-    await execute(await prepareLifecycleAction(holder.market, { kind: 'cash-out', tokenIds: ids, minReclaimedWei: quote.reclaimWei }, fork.accounts[0]))
+    await execute(await prepareLifecycleAction(holder.market, { kind: 'cash-out', positions: ids, minReclaimedWei: quote.reclaimWei }, fork.accounts[0]))
     const rewardsAfter = await balances()
     expect(rewardsAfter).toEqual([rewardsBefore[0] + BigInt(quote.defifaTokenWei), rewardsBefore[1] + BigInt(quote.baseProtocolTokenWei)])
     holder = await readLifecycle(chainId, market.projectId, fork.accounts[0])
-    expect(holder.inventory.totalOwned).toBe('0')
+    expect(holder.positions).toEqual([])
     expect(BigInt(holder.market.potWei)).toBe(previousPot - BigInt(quote.reclaimWei))
   })
 
@@ -227,7 +229,7 @@ describe.each(forkChainIds)('canonical Defifa contracts on local chain %i fork',
     await fork.advanceTo(lifecycle.noContestAfter + 1)
     lifecycle = await readLifecycle(chainId, timeoutMarket.projectId, fork.accounts[3])
     expect(lifecycle.canTriggerNoContest).toBe(true)
-    const ids = lifecycle.inventory.tokens.map(token => token.tokenId)
+    const ids = lifecycle.positions
     await expect(readCashOutQuote(lifecycle.market, ids, fork.accounts[3])).rejects.toThrow(/Open.*no-contest/)
     await execute(await prepareLifecycleAction(lifecycle.market, { kind: 'no-contest' }, fork.accounts[3]))
     await fork.advanceTo(Number((await fork.client.getBlock()).timestamp) + 1)
@@ -235,9 +237,9 @@ describe.each(forkChainIds)('canonical Defifa contracts on local chain %i fork',
     expect(lifecycle.market.noContestTriggered).toBe(true)
     const quote = await readCashOutQuote(lifecycle.market, ids, fork.accounts[3])
     expect(quote.reclaimWei).toBe((BigInt(definition.unitPriceWei) * 3n).toString())
-    await execute(await prepareLifecycleAction(lifecycle.market, { kind: 'cash-out', tokenIds: ids, minReclaimedWei: quote.reclaimWei }, fork.accounts[3]))
+    await execute(await prepareLifecycleAction(lifecycle.market, { kind: 'cash-out', positions: ids, minReclaimedWei: quote.reclaimWei }, fork.accounts[3]))
     lifecycle = await readLifecycle(chainId, timeoutMarket.projectId, fork.accounts[3])
-    expect(lifecycle.inventory.totalOwned).toBe('0')
+    expect(lifecycle.positions).toEqual([])
     expect(lifecycle.market.potWei).toBe('0')
   })
 })

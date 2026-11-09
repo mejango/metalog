@@ -1,10 +1,11 @@
-import { getAddress, keccak256, type Abi, type Address, type Hex, type PublicClient } from 'viem'
+import { concat, getAddress, keccak256, pad, toHex, type Abi, type Address, type Hex, type PublicClient } from 'viem'
 import artifacts from './defifa-deployments.json'
 import abi from './defifa-abi.json'
 
 export type Deployment = {
   deployer: Address
   governor: Address
+  referee: Address
   implementation: Address
   hookLib: Address
   terminal: Address
@@ -17,10 +18,13 @@ export type Deployment = {
   hookGetters: Record<string, string>
 }
 
-// Native Defifa position IDs encode tier × multiplier + serial.
-export const TOKEN_MULTIPLIER = 1_000_000_000n
-
 export const DEFIFA_ABI = abi as Record<keyof typeof abi, Abi>
+
+/** JBMetadataResolver layout for one hook payload: reserved word, lookup table (id, word offset 2), payload. */
+export function hookMetadata(target: Address, purpose: 'pay' | 'cashOut', payload: Hex): Hex {
+  const id = (BigInt(target.slice(0, 10)) ^ BigInt(keccak256(toHex(purpose)).slice(0, 10))).toString(16).padStart(8, '0')
+  return concat([pad('0x', { size: 32 }), pad(`0x${id}02`, { dir: 'right', size: 32 }), payload])
+}
 
 export function deploymentForChain(chainId: number): Deployment {
   const deployment = artifacts.chains[String(chainId) as keyof typeof artifacts.chains]
@@ -74,6 +78,7 @@ export async function verifyDefifaDeployment(client: PublicClient, chainId: numb
     ['DefifaGovernor', deployment.governor],
     ['DefifaHook', deployment.implementation],
     ['DefifaHookLib', deployment.hookLib],
+    ['DefifaVotingReferee', deployment.referee],
   ] as const).map(async ([name, address]) => {
     assertDeploymentCode(await client.getCode({ address, blockNumber }), fingerprints[name], name)
   }))
@@ -97,9 +102,11 @@ export async function verifyDefifaDeployment(client: PublicClient, chainId: numb
   await Promise.all([
     checkGetters(deployment.deployer, 'DefifaDeployer', deployment.deployerGetters),
     checkGetters(deployment.implementation, 'DefifaHook', deployment.hookGetters),
-    contractRead<Address>(client, deployment.governor, 'DefifaGovernor', 'CONTROLLER', [], blockNumber).then(controller => {
-      if (!sameAddress(controller, deployment.controller)) throw new Error('The Defifa governor controller does not match.')
-    }),
+    ...(['DefifaGovernor', 'DefifaVotingReferee'] as const).map(contract => contractRead<Address>(
+      client, contract === 'DefifaGovernor' ? deployment.governor : deployment.referee, contract, 'CONTROLLER', [], blockNumber,
+    ).then(controller => {
+      if (!sameAddress(controller, deployment.controller)) throw new Error(`The ${contract} controller does not match.`)
+    })),
   ])
   return deployment
 }

@@ -166,7 +166,7 @@ dialog .actions { justify-content: flex-end; }
 .row-menu:hover, .row-menu[aria-expanded="true"] { background: var(--sunk); }
 .row-action .actions { margin: 0; }
 .row-action > td { background: var(--surface); padding: 12px 14px; }
-.inventory-table input[type="checkbox"] { width: 20px; height: 20px; margin: 0; vertical-align: middle; }
+.inventory-table input[type="number"] { width: 6em; }
 .scorecard summary { overflow-wrap: anywhere; }
 .entry-coefficients { overflow-wrap: anywhere; }
 

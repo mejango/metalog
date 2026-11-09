@@ -1,8 +1,7 @@
-import { decodeFunctionData, getAbiItem, parseEventLogs, zeroAddress, type Address, type Hex, type PublicClient, type TransactionReceipt } from 'viem'
+import { decodeFunctionData, zeroAddress, type Address, type Hex, type PublicClient, type TransactionReceipt } from 'viem'
 import type { Coefficients } from '../domain/distribution'
-import { decodeEntryMemo, NATIVE_TOKEN, projectNumber, verifyRecordedEntry, type MarketSnapshot } from './defifa'
-import { assertChain, DEFIFA_ABI, deploymentForChain, sameAddress, TOKEN_MULTIPLIER } from './defifa-deployment'
-import { firstBlockAtTimestamp, MAX_LOG_BLOCKS } from './history-blocks'
+import { decodeEntryMemo, NATIVE_TOKEN, projectNumber, quantitiesOf, receiptMoves, verifyRecordedEntry, type MarketSnapshot } from './defifa'
+import { assertChain, DEFIFA_ABI, deploymentForChain, sameAddress } from './defifa-deployment'
 
 export type EntryHistoryEntry = {
   status: 'verified-curve' | 'verified-manual' | 'unrecognized' | 'unsupported' | 'invalid'
@@ -12,34 +11,17 @@ export type EntryHistoryEntry = {
   account: Address
   beneficiary: Address | null
   stakeWei: string | null
-  tokenIds: string[]
   quantities: number[]
   coefficients: Coefficients | null
   reason?: string
 }
-export type EntryHistoryPage = {
-  schema: 'metalog.entries.v1'
-  chainId: number
-  projectId: string
-  blockNumber: string
-  entries: EntryHistoryEntry[]
-  scannedFromBlock: string | null
-  scannedToBlock: string | null
-  complete: boolean
-  nextCursor: string | null
-}
-const MAX_ENTRIES = 8
 const MAX_LOGS = 2_000
-const FIRST_TRANSACTION = 2_147_483_647
 
-type Mint = { from: Address; to: Address; tokenId: bigint }
-function receiptMints(market: MarketSnapshot, receipt: TransactionReceipt) {
-  return parseEventLogs({ abi: DEFIFA_ABI.DefifaHook, logs: receipt.logs, eventName: 'Transfer', strict: true })
-    .filter(log => sameAddress(log.address, market.hook) && sameAddress((log.args as Mint).from, zeroAddress))
-    .map(log => log.args as Mint)
+function receiptMints(market: MarketSnapshot, receipt: Pick<TransactionReceipt, 'logs'>) {
+  return receiptMoves(market.hook, receipt).filter(move => sameAddress(move.from, zeroAddress))
 }
 
-type MintLog = { transactionHash: Hex; blockNumber: bigint; blockHash: Hex; transactionIndex: number; args: Mint }
+type MintLog = { transactionHash: Hex; blockNumber: bigint; blockHash: Hex; transactionIndex: number }
 
 /** Checks one transaction that minted positions in this market and returns its entry evidence. */
 async function verifyEntryTransaction(client: PublicClient, market: MarketSnapshot, log: MintLog): Promise<EntryHistoryEntry> {
@@ -60,15 +42,12 @@ async function verifyEntryTransaction(client: PublicClient, market: MarketSnapsh
     throw new Error('The entry receipt falls outside the entry period.')
   }
   const mints = receiptMints(market, receipt)
-  const tokenIds = mints.map(mint => mint.tokenId.toString())
-  if (!mints.length || mints.length > MAX_LOGS || new Set(tokenIds).size !== tokenIds.length
-    || !mints.some(mint => mint.tokenId === log.args.tokenId)) {
-    throw new Error('The entry receipt does not prove its discovered mint.')
-  }
-  const quantities = market.ranges.map(range => mints.filter(mint => mint.tokenId / TOKEN_MULTIPLIER === BigInt(range.tierId)).length)
+  if (!mints.length || mints.length > MAX_LOGS) throw new Error('The entry receipt does not prove its discovered mint.')
+  const quantities = quantitiesOf(market, mints)
+  const minted = mints.reduce((sum, mint) => sum + mint.value, 0n)
   const entry: EntryHistoryEntry = { status: 'unsupported', transactionHash: receipt.transactionHash,
     blockNumber: receipt.blockNumber.toString(), timestamp, account: transaction.from,
-    beneficiary: mints.every(mint => sameAddress(mint.to, mints[0].to)) ? mints[0].to : null, stakeWei: null, tokenIds, quantities, coefficients: null }
+    beneficiary: mints.every(mint => sameAddress(mint.to, mints[0].to)) ? mints[0].to : null, stakeWei: null, quantities, coefficients: null }
   if (!sameAddress(transaction.to, d.terminal)) {
     entry.reason = 'Wrapped calls are not decoded. Mint effects are shown; outer transaction value is not an attributed entry stake.'
     return entry
@@ -79,8 +58,8 @@ async function verifyEntryTransaction(client: PublicClient, market: MarketSnapsh
   if (call.functionName !== 'pay') { entry.reason = 'The terminal call is not a direct payment.'; return entry }
   const [id, token, amount, beneficiary, minimum, memoText, metadata] = call.args as readonly [bigint, Address, bigint, Address, bigint, string, Hex]
   if (id !== projectNumber(market.projectId) || !sameAddress(token, NATIVE_TOKEN) || amount !== transaction.value
-    || minimum !== 0n || quantities.reduce((sum, quantity) => sum + quantity, 0) !== mints.length
-    || mints.some(mint => !sameAddress(mint.to, beneficiary) || mint.tokenId % TOKEN_MULTIPLIER === 0n)) {
+    || minimum !== 0n || BigInt(quantities.reduce((sum, quantity) => sum + quantity, 0)) !== minted
+    || mints.some(mint => !sameAddress(mint.to, beneficiary))) {
     entry.status = 'invalid'; entry.reason = 'The payment and minted positions do not match this market.'; return entry
   }
   entry.beneficiary = beneficiary
@@ -109,77 +88,13 @@ async function verifyEntryTransaction(client: PublicClient, market: MarketSnapsh
   return entry
 }
 
-/** One entry by transaction, with the same checks as the history pages. */
+/** One entry by transaction: its receipt, payment and recorded curve, checked against the minted positions. */
 export async function readEntry(client: PublicClient, market: MarketSnapshot, transactionHash: Hex): Promise<EntryHistoryEntry> {
   await assertChain(client, market.chainId)
   const receipt = await client.getTransactionReceipt({ hash: transactionHash })
   const mints = receiptMints(market, receipt)
   if (!mints.length || receipt.blockNumber > BigInt(market.blockNumber)) throw new Error('This transaction did not mint positions in this market.')
   return verifyEntryTransaction(client, market, { transactionHash, blockNumber: receipt.blockNumber, blockHash: receipt.blockHash,
-    transactionIndex: receipt.transactionIndex, args: mints[0] })
+    transactionIndex: receipt.transactionIndex })
 }
 
-/** Public history proves original mint effects, never later ownership or a sale price. */
-export async function readEntryHistory(client: PublicClient, market: MarketSnapshot, cursor?: string): Promise<EntryHistoryPage> {
-  await assertChain(client, market.chainId)
-  const head = BigInt(market.blockNumber)
-  const page: EntryHistoryPage = { schema: 'metalog.entries.v1', chainId: market.chainId, projectId: market.projectId,
-    blockNumber: market.blockNumber, entries: [], scannedFromBlock: null, scannedToBlock: null, complete: true, nextCursor: null }
-  if (market.blockTimestamp < market.definition.entryOpensAt) return page
-  const first = await firstBlockAtTimestamp(client, market, market.definition.entryOpensAt)
-  const last = market.blockTimestamp < market.definition.entryClosesAt ? head
-    : (await firstBlockAtTimestamp(client, market, market.definition.entryClosesAt)) - 1n
-  let end = last
-  let before = FIRST_TRANSACTION
-  if (cursor !== undefined) {
-    if (!/^\d{1,78}:\d{1,10}$/.test(cursor)) throw new Error('The entry cursor is invalid.')
-    const [block, index] = cursor.split(':')
-    end = BigInt(block); before = Number(index)
-    if (end < first || end > last || !Number.isSafeInteger(before) || before > FIRST_TRANSACTION) {
-      throw new Error('The entry cursor is outside this snapshot.')
-    }
-  }
-  if (end < first) return page
-  const event = getAbiItem({ abi: DEFIFA_ABI.DefifaHook, name: 'Transfer' })
-  if (!event || event.type !== 'event') throw new Error('The mint event ABI is unavailable.')
-  let span = MAX_LOG_BLOCKS
-  for (let request = 0; request < 4 && end >= first; request++) {
-    const start = end - first + 1n > span ? end - span + 1n : first
-    const rawLogs = await client.getLogs({ address: market.hook, event, args: { from: zeroAddress }, fromBlock: start, toBlock: end, strict: true })
-    const logs = parseEventLogs({ abi: DEFIFA_ABI.DefifaHook, logs: rawLogs, eventName: 'Transfer', strict: true })
-    if (logs.length !== rawLogs.length || logs.some(log => !sameAddress((log.args as Mint).from, zeroAddress))) {
-      throw new Error('The history response contains invalid mint logs.')
-    }
-    if (logs.length > MAX_LOGS) {
-      if (span === 1n) throw new Error('A block exceeds the entry history read limit.')
-      span = span / 2n || 1n
-      continue
-    }
-    page.scannedToBlock ??= end.toString()
-    page.scannedFromBlock = start.toString()
-    for (const log of logs) {
-      if (log.removed || log.blockNumber === null || log.transactionIndex === null || !log.transactionHash
-        || !log.blockHash || !sameAddress(log.address, market.hook) || log.blockNumber < start || log.blockNumber > end) {
-        throw new Error('The entry logs do not match the requested history.')
-      }
-    }
-    const candidates = [...new Map(logs.filter(log => log.blockNumber! < end || log.transactionIndex! < before)
-      .map(log => [log.transactionHash!, log])).values()]
-      .sort((a, b) => a.blockNumber === b.blockNumber ? b.transactionIndex! - a.transactionIndex! : a.blockNumber! > b.blockNumber! ? -1 : 1)
-    for (const log of candidates.slice(0, MAX_ENTRIES)) {
-      page.entries.push(await verifyEntryTransaction(client, market, log as MintLog))
-    }
-    if (candidates.length > MAX_ENTRIES) {
-      const final = candidates[MAX_ENTRIES - 1]
-      page.scannedFromBlock = final.blockNumber!.toString()
-      page.complete = false; page.nextCursor = `${final.blockNumber}:${final.transactionIndex}`
-      return page
-    }
-    end = start - 1n; before = FIRST_TRANSACTION
-    if (candidates.length) break
-  }
-  if (page.scannedFromBlock === null) throw new Error('Entry history could not be read within its request limit.')
-  page.complete = end < first
-  page.nextCursor = page.complete ? null : `${end}:${FIRST_TRANSACTION}`
-  return page
-}

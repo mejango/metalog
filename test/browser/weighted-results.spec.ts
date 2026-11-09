@@ -6,14 +6,14 @@ import { marketRanges, validateMarket } from '../../src/domain/market'
 const account = '0x1111111111111111111111111111111111111111'
 const definition = validateMarket({ ...EXAMPLE_MARKET, rangeCount: 3, rangeWidth: 1, rangeBoundaries: undefined })
 const snapshot: LifecycleSnapshot = {
-  market: { chainId: 8453, projectId: '27', hook: account, governor: account, definition, ranges: marketRanges(definition),
+  market: { chainId: 8453, projectId: '27', hook: account, governor: account, referee: account, definition, ranges: marketRanges(definition),
     phase: 3, stage: 'settlement', blockNumber: '100', blockTimestamp: definition.resolvesAt + 1, potWei: '4000000000000',
     tiers: [1, 2, 3].map(tierId => ({ tierId, supply: '2', entrySupply: '2', priceWei: definition.unitPriceWei, remainingSupply: '999999999' })),
     ratifiedScorecardId: null, ratifiedWeights: null, cashOutWeightTotal: '1000000000000000000', commitmentsFulfilled: false, noContestTriggered: false },
-  account, inventory: { tokens: [], totalOwned: '0', totalCandidates: '0', nextCursor: null, complete: true }, delegates: [],
+  account, positions: [], delegates: [],
   scorecards: [{ scorecardId: '7', weights: [{ tierId: 1, weight: '600000000000000000' }, { tierId: 2, weight: '400000000000000000' }],
     submitter: account, state: 3, stateName: 'Succeeded', submittedAt: definition.resolvesAt + 1, attestationsBegin: definition.resolvesAt + 2,
-    gracePeriodEnds: definition.resolvesAt + 3, attestationCount: '10', quorum: '10', accountWeight: '10', hasAttested: true, canAttest: false, canRevoke: false, canRatify: true }],
+    gracePeriodEnds: definition.resolvesAt + 3, attestationCount: '10', quorum: '10', accountWeight: '10', hasAttested: true, forwarded: true, ratifiableAt: null, canAttest: false, canRevoke: false, canForward: false, canRatify: true }],
   scorecardsNextCursor: null, scorecardsComplete: true, attestationGraceSeconds: 86400, timelockSeconds: 3600,
   noContestAfter: definition.resolvesAt + 1000000, canSubmitScorecard: true, canDelegate: false, canFulfill: false, canTriggerNoContest: false, cashOutMode: null,
 }

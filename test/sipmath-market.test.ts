@@ -19,7 +19,7 @@ function snapshot(): MarketSnapshot {
   const ranges = createRanges(definition.rangeCount, definition.rangeWidth)
   return {
     chainId: 8453, projectId: '7', hook: '0x0000000000000000000000000000000000000123',
-    governor: '0x0000000000000000000000000000000000000456', definition, ranges,
+    governor: '0x0000000000000000000000000000000000000456', referee: '0x0000000000000000000000000000000000000456', definition, ranges,
     phase: 4, stage: 'complete', blockNumber: '321', blockTimestamp: 1_800_000_000, potWei: '8000000000000',
     tiers: ranges.map((range, index) => ({
       tierId: range.tierId, supply: ['0', '2', '6'][index], entrySupply: ['2', '4', '6'][index],

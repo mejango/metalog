@@ -101,3 +101,35 @@ Follow-up (jango): memo curves can be shaped without paying for them, so the cro
 - Result IDs shortened in the summary; the full ID stays in the details.
 - Who can attest: `readResultVoters` (positions by ID, owners, per-range delegates, BWA weight at submission - 1, attested) behind `/voters`, listed per result on open. Verified on Base game 28: four voters, attested sum equals the governor's count; together they hold 19,999,999,987 against a 19,999,999,999 quorum, so the page says the result cannot reach quorum (contract headroom truncation allowance, fixed in a defifa PR).
 - Order book: "If runner-up" beside "If it wins" before any proposal, a 20% share (`RUNNER_UP_WEIGHT`).
+
+# Defifa 2.0 ERC-1155 games (2026-11-09)
+
+Resources: `/Users/jango/Documents/jb/v6/evm/AGENTS.md`, `/Users/jango/Documents/jb/v6/evm/tasks/lessons.md`, `/Users/jango/Documents/jb/v6/evm/workflow/ponytail/SKILL.md`, `/Users/jango/Documents/jb/v6/evm/workflow/ponytail/README.md`, `/Users/jango/Documents/jb/v6/evm/docs/PLAN_REFINEMENT.md`; local `AGENTS.md`, `README.md` apply.
+
+## Plan refinement
+- **Objective:** jango: metalog uses the newly deployed Defifa 2.0.1 ERC-1155 game (Defifa1155Deployer/Governor/Hook, DefifaVotingReferee, DefifaTiersHookStore), and Bendystraw (reindexed with Defifa 2.0 tables) where the chain cannot enumerate.
+- **System fit:** Chain stays the authority for every market read, action and receipt; Bendystraw only discovers (market list, activity rows, holders for the voter list), and every discovered item is re-read on chain before it is shown as verified. 1.0.2 (721) games are deprecated upstream and stop loading here; no dual support.
+- **Contract changes the client follows:**
+  - launch: `attestationStartTime/GracePeriod` removed, `referee` = DefifaVotingReferee and `refereeData = abi.encode(resolvesAt, 1 day)` added.
+  - positions are per-range balances (token ID = tier ID): pay metadata `(delegate, uint16[] tierIds, uint256[] counts)`, holdings via `balanceOfBatch`, transfers `safeTransferFrom(from,to,id,amount,data)`, cash out metadata `(ids, amounts)`, receipts read `TransferSingle/TransferBatch`.
+  - results: submit/attest/revoke on the referee; a new Forward step (referee SUCCEEDED → governor queue) and Ratify on the governor after its timelock. Quorum per result is `referee.quorumOf(gameId, scorecardId)`; `scorecardQuorum` and its test are deleted.
+- **Reuse and simplicity:** one deployment JSON regenerated from the 2.0.1 artifacts (fingerprints checked on all eight chains); ABIs from the same artifacts. Inventory becomes one batched read, so position paging and token-ID selection go; the UI picks counts per range. Activity returns from Bendystraw; the unused paged entry-history scan is deleted (single-receipt verification stays).
+- **Evidence and unknowns:** no 1155 game exists yet (Bendystraw totalCount 0); verify with a launch + pay + cash-out flow on a Base fork (lifecycle fork suite) and live reads of the deployed contracts. Bendystraw is queried keyless from the server.
+- **Verification:** unit + browser suites, lifecycle fork suite against Base, fingerprint check on all chains, screenshot on dev.
+- **Resource budget:** adapter rewrite in `lib/defifa*.ts`, `activity.ts`, `entries.ts`, positions UI in `MarketLifecycle.tsx`; no new dependency, no SDK change (the SDK has no 1155 helpers; pay/cash-out metadata are built with its generic resolver). Replan if the fork shows the referee flow needs more than one new action.
+
+- [x] Deployment JSON + ABIs regenerated and fingerprint-checked on 8 chains.
+- [x] Launch, pay, inventory, transfer, delegate, cash out on 1155.
+- [x] Referee results flow: submit, attest, revoke, forward, ratify; quorumOf; voters via Bendystraw holders.
+- [x] Activity from Bendystraw, unhidden; entry-history scan removed.
+- [x] Market list from Bendystraw.
+- [x] Suites, fork lifecycle, push.
+
+## Review
+
+- Pins regenerated from the 2.0.1 records: every chain's runtime (deployer, governor, referee, hook, hook library) hashes the same with compiler immutable offsets zeroed, and equals the release record. Store is DefifaTiersHookStore.
+- Launch passes `referee` + `refereeData (resolvesAt, 1 day)`; pay and cash-out metadata are `(delegate, ids, counts)` and `(ids, amounts)` keyed to the 1155 code origin; receipts read TransferSingle/TransferBatch. Positions are per-range balances (one `balanceOfBatch`), so token paging, `getDefifaHoldings` and token-ID selection are gone; the panel picks burn counts per range and transfers send a count.
+- Results: referee submit/attest/revoke, a "Queue for ratification" step (`forwardScorecardFor`), ratify on the governor at `scorecardSubmittedAtOf + timelock`. Quorum is `referee.quorumOf`; `scorecardQuorum` and its test are deleted. The #153 unreachability no longer applies: the 2.0 referee caps quorum at 75% of max weight.
+- Bendystraw (keyless, server only): Activity is back (mints + cash-out events), voter holders, and market discovery beside `METALOG_MARKETS`. The paged entry-history scan is deleted; one receipt is still verified on open.
+- 1.0.2 (721) games no longer load here.
+- Evidence: 222 unit, 75 browser (1 skipped), fork integration on Base Sepolia (create, refund, transfer, delegate, propose, attest, revoke, queue, ratify, claim, no-contest refund, custom ranges), and the browser lifecycle on the same fork, 16 transactions. The fork browser test had not run since the tab redesign; its locators (tabpanel role, tab switching, nested summaries) were fixed along the way. Production shows these after deploy; no 1155 game exists yet.

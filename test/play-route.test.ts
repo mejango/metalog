@@ -15,16 +15,16 @@ describe('account lifecycle endpoint', () => {
   it('pins all continuation reads and disables caching wallet evidence', async () => {
     const evidence = { account, inventory: { tokens: [], complete: false, nextCursor: '400' } }
     mocks.readLifecycle.mockResolvedValue(evidence)
-    const response = await get(`?account=${account}&blockNumber=1200&tokenCursor=200&scorecardCursor=1000`)
+    const response = await get(`?account=${account}&blockNumber=1200&scorecardCursor=1000`)
     expect(response.status).toBe(200)
     expect(response.headers.get('Cache-Control')).toBe('private, no-store')
     expect(await response.json()).toEqual(evidence)
     expect(mocks.readLifecycle).toHaveBeenCalledWith(84532, '123', account,
-      { blockNumber: '1200', tokenCursor: '200', scorecardCursor: '1000' })
+      { blockNumber: '1200', scorecardCursor: '1000' })
   })
 
   it('rejects malformed identifiers and unpinned pages before RPC reads', async () => {
-    for (const query of ['?account=bad', '?tokenCursor=200', '?scorecardCursor=0', '?blockNumber=-1', '?blockNumber=1e2', `?blockNumber=${2n ** 256n}`]) {
+    for (const query of ['?account=bad', '?scorecardCursor=0', '?blockNumber=-1', '?blockNumber=1e2', `?blockNumber=${2n ** 256n}`]) {
       expect((await get(query)).status).toBe(400)
     }
     expect((await get('', '123')).status).toBe(400)

@@ -24,7 +24,7 @@ After the checks below pass, publish this directory with `railway up --project c
 - Market definition with exact observation dates/rule and two overflow ranges. Simple creates equal-width NFT ranges centered on zero; Advanced has an explicit 3–61 range count and editable edges, with equal-width, equal-probability, logarithmic and kmac seven-tier presets. Both layouts retain their drafts when switching. Kmac names are editable and remain in native NFT names, Center metadata and exports.
 - Optional Bitcoin, Ethereum and Solana USD observation templates with 15-minute, 1-hour or 1-day windows. Applying fills editable fields; Custom keeps full control. Range recipes and observation templates are independent.
 - Simple mean/deviation, Expressive coefficients and By range NFT counts retain independent drafts. One chart overlays the curve and allocation bars on the same percentage axis, with exact bucket details, overflow totals and two read-only positions columns without inner scrolling.
-- Native Defifa creation, entry, NFT transfers, voting delegation, scorecard proposals/attestations/ratification, refunds and payout claims. Every write uses external-wallet review, simulation, receipt-effect verification and reload recovery.
+- Native Defifa 2.0 ERC-1155 creation, entry, position transfers, voting delegation, scorecard proposals/attestations (DefifaVotingReferee), queueing and ratification (governor), refunds and payout claims. Every write uses external-wallet review, simulation, receipt-effect verification and reload recovery.
 - Signa connection using the shared SDK, enabled after origin/callback registration.
 - Block-pinned market reads, circulating and reconstructed opening supply, ratified scorecard weights, and native JSON plus reproducible SIPmath export/preview.
 
@@ -65,7 +65,7 @@ RPC, IPFS pinning and gateway reads use the shared SDK's Juicebox Center service
 
 `METALOG_RPC_URLS` is a test-only map of chain IDs to server-side local HTTP Anvil nodes, for example `{"84532":"http://127.0.0.1:8545"}`. Only `localhost`, `127.0.0.1` and `::1` are allowed. An overridden chain fails closed. This setting does not change the browser or wallet's RPC: local integration tests must direct those to the same fork. Restart the server after changing it.
 
-Defifa addresses, minimized ABIs and runtime fingerprints are pinned in `src/lib/defifa-*`. Writes freshly verify the configured release and game invariants. Deployment identities were verified on all eight networks on 2026-10-10; this is a code-identity check, not a public-chain transaction test or a promise of RPC availability.
+Defifa 2.0.1 ERC-1155 addresses (deployer, governor, voting referee, hook, hook library, tier store), minimized ABIs and runtime fingerprints are pinned in `src/lib/defifa-*`. Writes freshly verify the configured release and game invariants. Deployment identities were verified on all eight networks on 2026-11-09; this is a code-identity check, not a public-chain transaction test or a promise of RPC availability.
 
 ## Owners
 
@@ -73,6 +73,7 @@ Defifa addresses, minimized ABIs and runtime fingerprints are pinned in `src/lib
 | --- | --- |
 | `src/domain` | Distribution, exact range boundaries, allocation, definition validation |
 | `src/lib/defifa*` | Pinned deployments, native Defifa calls, chain evidence and receipt effects |
+| `src/lib/bendystraw.ts` | Server-side discovery reads (market list, activity, holders for the voter list); results are re-read on chain |
 | `src/lib/transaction.ts` | Shared SDK execution adapter and durable transaction evidence |
 | `src/lib/wallet*`, `src/providers` | One chain/RPC policy, wagmi, Query, lazy Signa and connection state |
 | `src/lib/forecast.ts`, `market-data.ts` | Identical UI/API interpretation and native export |

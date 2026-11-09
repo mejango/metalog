@@ -10,8 +10,9 @@ export const nativeCreationRequest = {
   data: encodeFunctionData({ abi: abis.DefifaDeployer as Abi, functionName: 'launchGameWith', args: [{
     name: 'Test identity', projectUri: '', contractUri: '', baseUri: '', tiers: [], tierPrice: 1n,
     token: { token: zeroAddress, decimals: 18, currency: 1 }, mintPeriodDuration: 600, refundPeriodDuration: 0,
-    start: 1_800_000_000n, splits: [], attestationStartTime: 1_800_000_900n, attestationGracePeriod: 86_400n,
+    start: 1_800_000_000n, splits: [],
     defaultAttestationDelegate: zeroAddress, defaultTokenUriResolver: zeroAddress,
     terminal: deployments.chains['8453'].terminal, minParticipation: 0n, scorecardTimeout: 1000, timelockDuration: 3600n,
+    referee: deployments.chains['8453'].referee, refereeData: '0x',
   }] }),
 }

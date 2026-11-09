@@ -1,42 +1,48 @@
 import { describe, expect, it, vi } from 'vitest'
-import { encodeEventTopics, zeroAddress, type Address, type Hex, type PublicClient } from 'viem'
+import { encodeAbiParameters, getAddress, type Address, type Hex } from 'viem'
+import { createHookMetadata, hookMetadataId } from '@bananapus/nana-sdk-core'
 import { marketRanges, type MarketDefinition } from '../src/domain/market'
-import { DEFIFA_ABI, deploymentForChain, type MarketSnapshot } from '../src/lib/defifa'
+import type { MarketSnapshot } from '../src/lib/defifa'
 import { readActivity } from '../src/lib/activity'
 
-const chainId = 8453
-const hook = '0x0000000000000000000000000000000000000456' as Address
-const alice = '0x0000000000000000000000000000000000000123' as Address
-const head = BigInt(deploymentForChain(chainId).deployerBlock) + 20_000n
+const mocks = vi.hoisted(() => ({ bendystraw: vi.fn() }))
+vi.mock('../src/lib/bendystraw', () => ({ bendystraw: mocks.bendystraw }))
+
+const alice = getAddress('0x0000000000000000000000000000000000000123')
 const hash = (n: number) => `0x${n.toString(16).padStart(64, '0')}` as Hex
 const definition: MarketDefinition = { schemaVersion: 1, settlement: 'defifa-scorecard', prompt: 'BTC?', source: 'S', resolutionRule: 'R',
   entryOpensAt: 100, entryClosesAt: 1_000, resolvesAt: 2_000, rangeCount: 3, rangeWidth: 1, unitPriceWei: '1000' }
-const market = { chainId, projectId: '27', hook, definition, ranges: marketRanges(definition), blockNumber: head.toString(), blockTimestamp: 3_000 } as MarketSnapshot
-const transfer = (from: Address, to: Address, tierId: number, serial: number, block: bigint, tx: number, logIndex: number) => ({
-  address: hook, data: '0x', topics: encodeEventTopics({ abi: DEFIFA_ABI.DefifaHook, eventName: 'Transfer', args: { from, to, tokenId: BigInt(tierId) * 1_000_000_000n + BigInt(serial) } }),
-  blockNumber: block, blockHash: hash(Number(block)), transactionHash: hash(tx), transactionIndex: 0, logIndex, removed: false,
+const market = { chainId: 8453, projectId: '27', definition, ranges: marketRanges(definition) } as MarketSnapshot
+const cashOut = (ids: bigint[], amounts: bigint[]) => createHookMetadata([hookMetadataId(alice as Address, 'cashOut')],
+  [encodeAbiParameters([{ type: 'uint256[]' }, { type: 'uint256[]' }], [ids, amounts])])
+const page = (mints: unknown[], exits: unknown[], more = [false, false]) => ({
+  defifaEvents: { items: mints, pageInfo: { hasNextPage: more[0] } }, cashOutTokensEvents: { items: exits, pageInfo: { hasNextPage: more[1] } },
 })
 
 describe('readActivity', () => {
-  it('reads entries and exits newest first, ignores holder transfers and reads bounded windows', async () => {
-    const logs = [
-      transfer(zeroAddress, alice, 2, 1, head - 10n, 1, 0), transfer(zeroAddress, alice, 2, 2, head - 10n, 1, 1), transfer(zeroAddress, alice, 3, 3, head - 10n, 1, 2),
-      transfer(alice, hook, 2, 1, head - 5n, 2, 0),
-      transfer(alice, zeroAddress, 3, 3, head - 1n, 3, 0),
-    ]
-    const getLogs = vi.fn(async ({ fromBlock, toBlock }: { fromBlock: bigint; toBlock: bigint }) => {
-      expect(toBlock - fromBlock + 1n).toBeLessThanOrEqual(500n)
-      return logs.filter(log => log.blockNumber >= fromBlock && log.blockNumber <= toBlock)
-    })
-    const client = { getChainId: vi.fn(async () => chainId), getLogs,
-      getBlock: vi.fn(async ({ blockNumber }: { blockNumber: bigint }) => ({ number: blockNumber, hash: hash(Number(blockNumber)), timestamp: blockNumber > head - 20_000n ? 200n : 50n })) }
-    const page = await readActivity(client as unknown as PublicClient, market)
-    expect(page.events.map(event => [event.kind, event.account, event.quantities])).toEqual([
+  it('groups mints per transaction, reads burns from cash-out metadata and merges newest first', async () => {
+    mocks.bendystraw.mockResolvedValueOnce(page([
+      { txHash: hash(1), timestamp: 500, account: alice.toLowerCase(), tierId: 2, count: 2 },
+      { txHash: hash(1), timestamp: 500, account: alice.toLowerCase(), tierId: 3, count: 1 },
+    ], [{ txHash: hash(3), timestamp: 900, holder: alice.toLowerCase(), metadata: cashOut([3n], [1n]) }]))
+    const result = await readActivity(market)
+    expect(result.events.map(event => [event.kind, event.account, event.quantities])).toEqual([
       ['exit', alice, [0, 0, 1]],
       ['entry', alice, [0, 2, 1]],
     ])
-    expect(getLogs).toHaveBeenCalledTimes(16)
-    expect(page.complete).toBe(false)
-    expect(BigInt(page.nextCursor!)).toBe(head - 8_000n)
+    expect(result).toMatchObject({ complete: true, nextCursor: null })
+    expect(mocks.bendystraw).toHaveBeenCalledWith(8453, expect.any(String), { chainId: 8453, projectId: 27, before: 2 ** 31 - 1 })
+  })
+
+  it('ends a page at the oldest row of a list that continues, so the lists never skip each other', async () => {
+    mocks.bendystraw.mockResolvedValueOnce(page(
+      [{ txHash: hash(1), timestamp: 800, account: alice, tierId: 1, count: 1 }, { txHash: hash(2), timestamp: 700, account: alice, tierId: 1, count: 1 }],
+      [{ txHash: hash(3), timestamp: 600, holder: alice, metadata: cashOut([1n], [1n]) }],
+      [true, false],
+    ))
+    const result = await readActivity(market, 1_000)
+    expect(result.events.map(event => event.timestamp)).toEqual([800, 700])
+    expect(result).toMatchObject({ complete: false, nextCursor: '700' })
+    expect(mocks.bendystraw).toHaveBeenLastCalledWith(8453, expect.any(String), expect.objectContaining({ before: 1_000 }))
   })
 })

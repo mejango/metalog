@@ -388,7 +388,7 @@ describe('independent market action intents', () => {
   it('uses the verified hook identity over a forged persisted project label', async () => {
     const h = harness()
     const transfer = { ...request, value: 0n, to: a.hook,
-      data: encodeFunctionData({ abi: DEFIFA_ABI.DefifaHook, functionName: 'safeTransferFrom', args: [account, account, 1n] }) }
+      data: encodeFunctionData({ abi: DEFIFA_ABI.DefifaHook, functionName: 'safeTransferFrom', args: [account, account, 1n, 1n, '0x'] }) }
     h.runtime.send = vi.fn(async () => { throw new Error('lost transfer reply') })
     await expect(executeTransaction(transfer, { ...h.runtime, storage: marketAttemptStorage(h.storage, a) })).rejects.toThrow('lost transfer reply')
     const journal = JSON.parse(h.storage.getItem(TRANSACTION_JOURNAL_STORAGE_KEY)!)

@@ -1,8 +1,7 @@
 import {
-  decodeAbiParameters, decodeFunctionData, encodeFunctionData, formatEther, getAddress,
+  decodeFunctionData, encodeAbiParameters, encodeFunctionData, formatEther, getAddress,
   parseAbi, parseEventLogs, zeroAddress, type Address, type Hex, type PublicClient, type TransactionReceipt,
 } from 'viem'
-import { buildDefifaPayMetadata } from '@bananapus/nana-sdk-core/v6'
 import { allocateManualPositions, allocatePositions, MAX_RECORDED_POSITIONS, type Allocation } from '../domain/allocation'
 import { validateCoefficients, type Coefficients } from '../domain/distribution'
 import {
@@ -11,8 +10,9 @@ import {
 } from '../domain/market'
 import { formatPercentage, RANGE_DECIMAL_PLACES, type RangeBin } from '../domain/ranges'
 import {
-  assertChain, assertGameClone, contractRead, DEFIFA_ABI, deploymentForChain, sameAddress, TOKEN_MULTIPLIER, verifyDefifaDeployment,
+  assertChain, assertGameClone, contractRead, DEFIFA_ABI, deploymentForChain, hookMetadata, sameAddress, verifyDefifaDeployment,
 } from './defifa-deployment'
+import { bendystraw } from './bendystraw'
 import { loadMarketMetadata, publishMarketMetadata, type PublishedMarketMetadata } from './market-metadata'
 import type { PreparedTransaction } from './transaction'
 import { publicClientForChain, SUPPORTED_CHAINS } from './wallet'
@@ -29,6 +29,7 @@ export type MarketSnapshot = {
   projectId: string
   hook: Address
   governor: Address
+  referee: Address
   definition: MarketDefinition
   ranges: RangeBin[]
   phase: number
@@ -116,20 +117,21 @@ export async function readMarketAt(
     hook = (await read<RulesetResult>(d.controller, 'JBController', 'latestQueuedRulesetOf', [id]))[1].dataHook
   }
   assertGameClone(await client.getCode({ address: hook, blockNumber }), d.implementation)
-  const [terminal, governor, origin, store, reporter, hookProjectId, attestationStart, rawTiers, defaultDelegate] = await Promise.all([
+  const [terminal, governor, origin, store, reporter, hookProjectId, referee, attestationStart, rawTiers, defaultDelegate] = await Promise.all([
     read<Address>(d.directory, 'JBDirectory', 'primaryTerminalOf', [id, NATIVE_TOKEN]),
     read<Address>(hook, 'DefifaHook', 'owner'),
     read<Address>(hook, 'DefifaHook', 'CODE_ORIGIN'),
     read<Address>(hook, 'DefifaHook', 'store'),
     read<Address>(hook, 'DefifaHook', 'gamePhaseReporter'),
     read<bigint>(hook, 'DefifaHook', 'projectId'),
-    read<bigint>(d.governor, 'DefifaGovernor', 'attestationStartTimeOf', [id]),
+    read<Address>(d.governor, 'DefifaGovernor', 'refereeOf', [id]),
+    read<bigint>(d.referee, 'DefifaVotingReferee', 'attestationStartTimeOf', [id]),
     read<RawTier[]>(d.store, 'JB721TiersHookStore', 'tiersOf', [hook, [], false, 0n, 128n]),
     read<Address>(hook, 'DefifaHook', 'defaultAttestationDelegate'),
   ])
   if (!sameAddress(terminal, d.terminal) || !sameAddress(governor, d.governor)
     || !sameAddress(origin, d.implementation) || !sameAddress(store, d.store)
-    || !sameAddress(reporter, d.deployer) || hookProjectId !== id) {
+    || !sameAddress(reporter, d.deployer) || hookProjectId !== id || !sameAddress(referee, d.referee)) {
     throw new Error('The game contracts do not match the configured Defifa deployment.')
   }
   if (Number(attestationStart) !== definition.resolvesAt || rawTiers.length !== ranges.length) {
@@ -171,7 +173,7 @@ export async function readMarketAt(
     tierId: range.tierId, weight: weights[range.tierId - 1].toString(),
   }))
   return {
-    chainId, projectId, hook, governor, definition, ranges, phase: Number(phase),
+    chainId, projectId, hook, governor, referee: d.referee, definition, ranges, phase: Number(phase),
     stage: gameStage(Number(phase), definition, timestamp), blockNumber: blockNumber.toString(), blockTimestamp: timestamp,
     potWei: pot[0].toString(), tiers, ratifiedScorecardId: ratified === 0n ? null : ratified.toString(),
     ratifiedWeights, cashOutWeightTotal: '1000000000000000000',
@@ -187,7 +189,7 @@ async function assertEntryRules(client: PublicClient, market: MarketSnapshot): P
     contractRead<RulesetResult>(client, d.controller, 'JBController', 'latestQueuedRulesetOf', [id], block),
     contractRead<Address>(client, d.controller, 'JBController', 'SPLITS', [], block),
     contractRead<readonly [bigint, number]>(client, d.deployer, 'DefifaDeployer', 'safetyParamsOf', [id], block),
-    contractRead<bigint>(client, d.governor, 'DefifaGovernor', 'attestationGracePeriodOf', [id], block),
+    contractRead<bigint>(client, d.referee, 'DefifaVotingReferee', 'attestationGracePeriodOf', [id], block),
     contractRead<bigint>(client, d.governor, 'DefifaGovernor', 'timelockDurationOf', [id], block),
   ])
   const expectedTimeout = market.definition.resolvesAt - market.definition.entryClosesAt + SCORECARD_TIMEOUT_BUFFER_SECONDS
@@ -207,24 +209,33 @@ async function assertEntryRules(client: PublicClient, market: MarketSnapshot): P
   }
 }
 
-/** Explicit IDs keep first-run discovery bounded and never imply a complete chain index. */
+const GAMES_QUERY = `query Games($chainId: Int!) {
+  defifaGames(where: { chainId: $chainId, gameType: erc1155 }, orderBy: "createdAt", orderDirection: "desc", limit: 20) {
+    items { projectId deployer } } }`
+
+/**
+ * Configured IDs plus the newest 1155 games Bendystraw has seen from this deployment. Every game is read and
+ * validated on chain; discovered games that are not Metalog markets are left out quietly.
+ */
 export async function listMarkets(chainId: number): Promise<{ markets: MarketSnapshot[]; errors: string[] }> {
-  deploymentForChain(chainId)
+  const d = deploymentForChain(chainId)
   const configuration = process.env.METALOG_MARKETS || process.env.NEXT_PUBLIC_METALOG_MARKETS || ''
-  const entries = configuration.split(',').map(value => value.trim()).filter(Boolean)
   const errors: string[] = []
-  const ids = new Set<string>()
-  for (const entry of entries) {
+  const configured = new Set<string>()
+  for (const entry of configuration.split(',').map(value => value.trim()).filter(Boolean)) {
     const match = /^(\d+):([1-9]\d{0,77})$/.exec(entry)
     if (!match) { errors.push('A configured market ID is invalid.'); continue }
-    if (Number(match[1]) === chainId) ids.add(match[2])
+    if (Number(match[1]) === chainId) configured.add(match[2])
   }
-  if (ids.size > 20) errors.push('Only the first 20 configured markets are shown.')
-  const results = await Promise.allSettled([...ids].slice(0, 20).map(id => readMarket(chainId, id)))
+  const discovered = await bendystraw<{ defifaGames: { items: { projectId: number; deployer: string }[] } }>(chainId, GAMES_QUERY, { chainId })
+    .then(data => data.defifaGames.items.filter(game => sameAddress(game.deployer, d.deployer)).map(game => String(game.projectId)))
+    .catch(() => { errors.push('Recent markets could not be listed. Configured markets are still shown.'); return [] as string[] })
+  const ids = [...new Set([...configured, ...discovered])].slice(0, 20)
+  const results = await Promise.allSettled(ids.map(id => readMarket(chainId, id)))
   const markets: MarketSnapshot[] = []
   results.forEach((result, index) => {
     if (result.status === 'fulfilled') markets.push(result.value)
-    else errors.push(`Game ${[...ids][index]}: ${PUBLIC_MARKET_ERROR}`)
+    else if (configured.has(ids[index])) errors.push(`Game ${ids[index]}: ${PUBLIC_MARKET_ERROR}`)
   })
   return { markets, errors }
 }
@@ -240,11 +251,13 @@ export function launchData(definition: MarketDefinition, chainId: number, publis
     })),
     tierPrice: BigInt(definition.unitPriceWei), token: { token: NATIVE_TOKEN, decimals: 18, currency: 1 },
     mintPeriodDuration: definition.entryClosesAt - definition.entryOpensAt, refundPeriodDuration: 0,
-    start: BigInt(definition.entryClosesAt), splits: [], attestationStartTime: BigInt(definition.resolvesAt),
-    attestationGracePeriod: BigInt(ATTESTATION_GRACE_SECONDS), defaultAttestationDelegate: definition.defaultAttestationDelegate ?? zeroAddress,
+    start: BigInt(definition.entryClosesAt), splits: [], defaultAttestationDelegate: definition.defaultAttestationDelegate ?? zeroAddress,
     defaultTokenUriResolver: zeroAddress, terminal: d.terminal, minParticipation: 0n,
     scorecardTimeout: definition.resolvesAt - definition.entryClosesAt + SCORECARD_TIMEOUT_BUFFER_SECONDS,
     timelockDuration: BigInt(ATTESTATION_TIMELOCK_SECONDS),
+    // The voting referee opens attestations when observation ends.
+    referee: d.referee, refereeData: encodeAbiParameters([{ type: 'uint256' }, { type: 'uint256' }],
+      [BigInt(definition.resolvesAt), BigInt(ATTESTATION_GRACE_SECONDS)]),
   }
 }
 
@@ -275,26 +288,40 @@ async function verifyLaunchReceipt(
   }
 }
 
-function verifyEntryReceipt(hook: Address, owner: Address, tierIds: number[], receipt: TransactionReceipt): void {
-  const transfers = parseEventLogs({ abi: DEFIFA_ABI.DefifaHook, logs: receipt.logs, eventName: 'Transfer', strict: true })
-    .filter(log => sameAddress(log.address, hook))
-    .map(log => log.args as { from: Address; to: Address; tokenId: bigint })
-    .filter(log => sameAddress(log.from, zeroAddress) && sameAddress(log.to, owner))
-  const actualIds = transfers.map(log => Number(log.tokenId / TOKEN_MULTIPLIER)).sort((left, right) => left - right)
-  if (receipt.status !== 'success' || JSON.stringify(actualIds) !== JSON.stringify(tierIds)) {
+export type PositionMove = { from: Address; to: Address; id: bigint; value: bigint }
+
+/** Every 1155 single and batch transfer the hook emitted, one row per position ID. */
+export function receiptMoves(hook: Address, receipt: Pick<TransactionReceipt, 'logs'>): PositionMove[] {
+  return parseEventLogs({ abi: DEFIFA_ABI.DefifaHook, logs: receipt.logs, strict: true })
+    .filter(log => sameAddress(log.address, hook) && (log.eventName === 'TransferSingle' || log.eventName === 'TransferBatch'))
+    .flatMap(log => {
+      const args = log.args as { from: Address; to: Address; id?: bigint; value?: bigint; ids?: readonly bigint[]; values?: readonly bigint[] }
+      return log.eventName === 'TransferSingle'
+        ? [{ from: args.from, to: args.to, id: args.id!, value: args.value! }]
+        : args.ids!.map((id, index) => ({ from: args.from, to: args.to, id, value: args.values![index] }))
+    })
+}
+
+/** Positions moved per range, in market range order. */
+export function quantitiesOf(market: Pick<MarketSnapshot, 'ranges'>, moves: PositionMove[]): number[] {
+  return market.ranges.map(range => Number(moves.filter(move => move.id === BigInt(range.tierId)).reduce((sum, move) => sum + move.value, 0n)))
+}
+
+function verifyEntryReceipt(market: MarketSnapshot, owner: Address, allocation: Allocation, receipt: TransactionReceipt): void {
+  const mints = receiptMoves(market.hook, receipt).filter(move => sameAddress(move.from, zeroAddress) && sameAddress(move.to, owner))
+  const expected = market.ranges.map(range => allocation.quantities[allocation.tierIds.indexOf(range.tierId)] ?? 0)
+  if (receipt.status !== 'success' || JSON.stringify(quantitiesOf(market, mints)) !== JSON.stringify(expected)) {
     throw new Error('The receipt does not confirm the complete reviewed position allocation.')
   }
 }
 
-function expandedTierIds(allocation: Allocation): number[] {
-  return allocation.tierIds.flatMap((id, index) => Array<number>(allocation.quantities[index]).fill(id))
-}
-
-function entryMetadata(implementation: Address, definition: MarketDefinition, beneficiary: Address, tierIds: number[]) {
+function entryMetadata(implementation: Address, definition: MarketDefinition, beneficiary: Address, allocation: Allocation) {
   const delegate = definition.defaultAttestationDelegate ?? beneficiary
-  return { delegate, metadata: buildDefifaPayMetadata({
-    metadataIdTarget: implementation, tierIdsToMint: tierIds.map(BigInt), attestationDelegate: delegate,
-  }) }
+  const minted = allocation.tierIds.flatMap((tierId, index) => allocation.quantities[index] > 0 ? [[tierId, allocation.quantities[index]]] : [])
+  return { delegate, metadata: hookMetadata(implementation, 'pay', encodeAbiParameters(
+    [{ type: 'address' }, { type: 'uint16[]' }, { type: 'uint256[]' }],
+    [delegate, minted.map(([tierId]) => tierId), minted.map(([, count]) => BigInt(count))],
+  )) }
 }
 
 export function decodeEntryMemo(memoText: string, metadata: Hex) {
@@ -322,18 +349,13 @@ export function verifyRecordedEntry(
     ? allocatePositions(coefficients, market.ranges, memo.count, MAX_RECORDED_POSITIONS)
     : allocateManualPositions(coefficients, market.ranges, memo.quantities as number[], MAX_RECORDED_POSITIONS)
   if (memo.count !== allocation.count) throw new Error('The recorded position total does not match the position counts.')
-  const tierIds = expandedTierIds(allocation)
   if (amount !== BigInt(market.definition.unitPriceWei) * BigInt(allocation.count)) {
     throw new Error('The recorded entry does not pay the exact position price.')
   }
-  const [delegate, encodedIds] = decodeAbiParameters(
-    [{ type: 'address' }, { type: 'uint16[]' }], `0x${metadata.slice(130)}`,
-  )
-  const expectedMetadata = entryMetadata(implementation, market.definition, owner, tierIds)
-  if (!sameAddress(delegate, expectedMetadata.delegate) || JSON.stringify(encodedIds) !== JSON.stringify(tierIds) || metadata !== expectedMetadata.metadata) {
+  if (metadata !== entryMetadata(implementation, market.definition, owner, allocation).metadata) {
     throw new Error('The recorded mint metadata does not match the position allocation.')
   }
-  verifyEntryReceipt(market.hook, owner, tierIds, receipt)
+  verifyEntryReceipt(market, owner, allocation, receipt)
   return { coefficients, allocation }
 }
 
@@ -450,7 +472,6 @@ export async function prepareEntry(
       ? 'The position allocation does not match the submitted curve.'
       : 'The position allocation does not match the submitted position counts.')
   }
-  const tierIds = expandedTierIds(expected)
   const client = publicClientForChain(market.chainId)
   const d = deploymentForChain(market.chainId)
   const refresh = async () => {
@@ -471,7 +492,7 @@ export async function prepareEntry(
   }
   const current = await refresh()
   const amount = BigInt(definition.unitPriceWei) * BigInt(expected.count)
-  const { delegate, metadata } = entryMetadata(d.implementation, definition, owner, tierIds)
+  const { delegate, metadata } = entryMetadata(d.implementation, definition, owner, expected)
   const memo = JSON.stringify(expected.mode === 'curve'
     ? { schema: 'metalog.entry.v1', units: 'percentage-points', coefficients: a, count: expected.count }
     : { schema: 'metalog.entry.v2', units: 'percentage-points', coefficients: a, mode: 'manual', quantities: expected.quantities, count: expected.count })
@@ -491,6 +512,6 @@ export async function prepareEntry(
         ? [{ label: current.ranges[index].label, value: String(quantity) }] : []),
     ],
     reverify: async () => { await refresh() },
-    verifyReceipt: receipt => verifyEntryReceipt(current.hook, owner, tierIds, receipt),
+    verifyReceipt: receipt => verifyEntryReceipt(current, owner, expected, receipt),
   }
 }

@@ -1,12 +1,12 @@
 import { expect, it, vi } from 'vitest'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { decodeFunctionData, parseEventLogs, zeroAddress, type Address, type Hex, type TransactionReceipt } from 'viem'
+import { decodeFunctionData, zeroAddress, type Hex, type TransactionReceipt } from 'viem'
 import { allocatePositions } from '../../src/domain/allocation'
 import { validateCoefficients } from '../../src/domain/distribution'
 import { validateMarket } from '../../src/domain/market'
 import {
-  createdMarketId, DEFIFA_ABI, prepareCreateMarket, prepareEntry, readMarket, verifyDefifaTransactionReceipt,
+  createdMarketId, DEFIFA_ABI, prepareCreateMarket, prepareEntry, readMarket, receiptMoves, verifyDefifaTransactionReceipt,
 } from '../../src/lib/defifa'
 import {
   executeTransaction, readPendingTransaction, recoverTransaction, type TransactionRuntime,
@@ -105,10 +105,8 @@ it('creates unequal ranges and recovers their curve-derived mint without sending
     console.info('Local 100-position entry recovered', { chainId, transactionHash: recovered.transactionHash })
     expect(runtime.send).toHaveBeenCalledTimes(1)
     expect(readPendingTransaction(runtime.storage)).toBeNull()
-    const mints = parseEventLogs({ abi: DEFIFA_ABI.DefifaHook, eventName: 'Transfer', logs: recovered.logs })
-      .filter(log => log.address.toLowerCase() === market.hook.toLowerCase()
-        && (log.args as { from: Address }).from === zeroAddress)
-    expect(mints).toHaveLength(100)
+    const mints = receiptMoves(market.hook, recovered).filter(move => move.from === zeroAddress)
+    expect(mints.reduce((sum, move) => sum + move.value, 0n)).toBe(100n)
     // Native position labels are the onchain tier names. Full tokenURI also loads
     // two large onchain fonts; qualify that renderer on a full-node RPC.
     for (const range of market.ranges) {

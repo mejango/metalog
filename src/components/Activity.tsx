@@ -32,7 +32,7 @@ export function Activity({ market, active }: { market: MarketSnapshot; active: b
   })
   const events = query.data?.pages.flatMap(page => page.events) ?? []
   const { hasNextPage, isFetching, fetchNextPage } = query
-  // Pages are block windows, so keep reading back while the end of the list is near the screen.
+  // Keep reading back while the end of the list is near the screen.
   const end = useRef<HTMLDivElement>(null)
   const [near, setNear] = useState(false)
   useEffect(() => {

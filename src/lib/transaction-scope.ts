@@ -19,6 +19,7 @@ export function isMarketTransactionScope(value: unknown): value is MarketTransac
 export function decodeDefifaTransactionCall(request: { to: Address; data: Hex }, deployment: Deployment) {
   let contract: keyof typeof DEFIFA_ABI
   if (sameAddress(request.to, deployment.governor)) contract = 'DefifaGovernor'
+  else if (sameAddress(request.to, deployment.referee)) contract = 'DefifaVotingReferee'
   else if (sameAddress(request.to, deployment.deployer)) contract = 'DefifaDeployer'
   else if (sameAddress(request.to, deployment.terminal)) contract = 'JBMultiTerminal'
   else contract = 'DefifaHook'
@@ -43,8 +44,10 @@ export function classifyTransactionScope(request: TransactionCall, trustedMarket
       if (decoded.functionName === 'pay') id = args[0]
       else if (decoded.functionName === 'cashOutTokensOf' && value === 0n) id = args[1]
       else return { kind: 'unknown' }
-    } else if (decoded.contract === 'DefifaGovernor') {
-      if (value !== 0n || !['submitScorecardFor', 'ratifyScorecardFrom', 'attestToScorecardFrom', 'revokeAttestationFrom'].includes(decoded.functionName)) return { kind: 'unknown' }
+    } else if (decoded.contract === 'DefifaGovernor' || decoded.contract === 'DefifaVotingReferee') {
+      const supported = decoded.contract === 'DefifaGovernor' ? ['ratifyScorecardFrom']
+        : ['submitScorecardFor', 'attestToScorecardFrom', 'revokeAttestationFrom', 'forwardScorecardFor']
+      if (value !== 0n || !supported.includes(decoded.functionName)) return { kind: 'unknown' }
       id = args[0]
     } else if (decoded.contract === 'DefifaDeployer') {
       if (value !== 0n || !['fulfillCommitmentsOf', 'triggerNoContestFor'].includes(decoded.functionName)) return { kind: 'unknown' }
@@ -52,7 +55,7 @@ export function classifyTransactionScope(request: TransactionCall, trustedMarket
     } else {
       if (value !== 0n || !isMarketTransactionScope(trustedMarket) || trustedMarket.chainId !== request.chainId
         || !sameAddress(request.to, trustedMarket.hook)
-        || !(decoded.functionName === 'safeTransferFrom' && args.length === 3 || decoded.functionName === 'setTierDelegatesTo')) return { kind: 'unknown' }
+        || !(decoded.functionName === 'safeTransferFrom' && args.length === 5 || decoded.functionName === 'setTierDelegatesTo')) return { kind: 'unknown' }
       return { kind: 'market', chainId: trustedMarket.chainId, projectId: trustedMarket.projectId, hook: trustedMarket.hook }
     }
     if (typeof id !== 'bigint' || id <= 0n) return { kind: 'unknown' }

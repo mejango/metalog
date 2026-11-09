@@ -9,7 +9,7 @@ export default function DataPage() {
     <p>The response includes the question, observation rule, range boundaries, live tier supply, pool balance and chain block. Percentages use percentage points: <code>2.5</code> means +2.5%.</p>
     <p>Each range includes its lower bound and excludes its upper bound. A null bound denotes an overflow tail.</p>
     <pre>GET /api/markets/:chainId/:projectId/play?account=0x…</pre>
-    <p>The play view adds owned positions, results and available actions. Inventory and results history report their completeness and continuation cursors. Keep the same <code>blockNumber</code>; pass <code>inventory.nextCursor</code> as <code>tokenCursor</code> or <code>scorecardsNextCursor</code> as <code>scorecardCursor</code>. A partial page is not a complete inventory.</p>
+    <p>The play view adds the wallet&apos;s positions per range, results and available actions. Results history reports its completeness and continuation cursor. Keep the same <code>blockNumber</code> and pass <code>scorecardsNextCursor</code> as <code>scorecardCursor</code>.</p>
     <pre>POST /api/preview{`\n\n`}{JSON.stringify({ market: '<market definition>', coefficients: [0, 1, 0, 0, 0, 0], positions: 100 }, null, 2)}</pre>
     <p>Preview returns the curve probabilities, integer position allocation, difference from the curve and exact payment in wei. Supply <code>quantities</code>, one whole position count per range, instead of <code>positions</code> for a manual allocation. <code>allocation.mode</code> distinguishes <code>curve</code> from <code>manual</code>; the coefficients remain the reference curve. This endpoint sends no transaction.</p>
     <h2>SIPmath export</h2>

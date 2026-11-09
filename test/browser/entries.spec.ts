@@ -9,23 +9,21 @@ const definition = validateMarket({ ...EXAMPLE_MARKET, rangeCount: 3, rangeWidth
 const account = '0x1111111111111111111111111111111111111111'
 const hash = `0x${'ab'.repeat(32)}` as const
 const market: LifecycleSnapshot = {
-  market: { chainId: 8453, projectId: '27', hook: account, governor: account, definition, ranges: marketRanges(definition),
+  market: { chainId: 8453, projectId: '27', hook: account, governor: account, referee: account, definition, ranges: marketRanges(definition),
     phase: 3, stage: 'settlement', blockNumber: '100', blockTimestamp: definition.resolvesAt + 1, potWei: '4000000000000',
     tiers: [1, 2, 3].map(tierId => ({ tierId, supply: tierId === 2 ? '2' : '1', entrySupply: tierId === 2 ? '2' : '1', priceWei: definition.unitPriceWei, remainingSupply: '999999999' })),
     ratifiedScorecardId: null, ratifiedWeights: null, cashOutWeightTotal: '1000000000000000000', commitmentsFulfilled: false, noContestTriggered: false },
-  account: null, inventory: { tokens: [], totalOwned: '0', totalCandidates: '0', nextCursor: null, complete: true }, delegates: [],
+  account: null, positions: [], delegates: [],
   scorecards: [], scorecardsNextCursor: null, scorecardsComplete: true, attestationGraceSeconds: 86400, timelockSeconds: 3600,
   noContestAfter: definition.resolvesAt + 1000000, canSubmitScorecard: false, canDelegate: false, canFulfill: false, canTriggerNoContest: false, cashOutMode: null,
 }
 const entry: EntryHistoryEntry = { status: 'verified-curve', transactionHash: hash, blockNumber: '95', timestamp: definition.entryOpensAt + 600,
-  account, beneficiary: account, stakeWei: '4000000000000', tokenIds: ['1000000001', '2000000001', '2000000002', '3000000001'], quantities: [1, 2, 1], coefficients: [0, 1, 0, 0, 0, 0] }
+  account, beneficiary: account, stakeWei: '4000000000000', quantities: [1, 2, 1], coefficients: [0, 1, 0, 0, 0, 0] }
 const manualHash = `0x${'cd'.repeat(32)}` as const
-// Activity is unmounted until Bendystraw indexes Defifa; these run again when it returns.
-test.skip(true, 'Activity is hidden until Bendystraw indexes Defifa')
-const activity: ActivityPage = { schema: 'metalog.activity.v1', blockNumber: '100', complete: true, nextCursor: null, events: [
-  { kind: 'exit', transactionHash: `0x${'ef'.repeat(32)}`, blockNumber: '99', timestamp: definition.resolvesAt, account, quantities: [0, 1, 0] },
-  { kind: 'entry', transactionHash: hash, blockNumber: '95', timestamp: definition.entryOpensAt + 600, account, quantities: [1, 2, 1] },
-  { kind: 'entry', transactionHash: manualHash, blockNumber: '90', timestamp: definition.entryOpensAt + 300, account, quantities: [0, 4, 0] },
+const activity: ActivityPage = { schema: 'metalog.activity.v2', complete: true, nextCursor: null, events: [
+  { kind: 'exit', transactionHash: `0x${'ef'.repeat(32)}`, timestamp: definition.resolvesAt, account, quantities: [0, 1, 0] },
+  { kind: 'entry', transactionHash: hash, timestamp: definition.entryOpensAt + 600, account, quantities: [1, 2, 1] },
+  { kind: 'entry', transactionHash: manualHash, timestamp: definition.entryOpensAt + 300, account, quantities: [0, 4, 0] },
 ] }
 
 test('crowd activity lists entries and exits; an opened entry shows its checked record', async ({ page }) => {
@@ -42,7 +40,7 @@ test('crowd activity lists entries and exits; an opened entry shows its checked 
     const url = new URL(route.request().url()); entryReads.push(url)
     expect(url.searchParams.get('blockNumber')).toBe('100')
     return route.fulfill({ json: { entry: url.searchParams.get('tx') === manualHash
-      ? { ...entry, status: 'verified-manual', transactionHash: manualHash, tokenIds: ['2000000001', '2000000002', '2000000003', '2000000004'], quantities: [0, 4, 0] }
+      ? { ...entry, status: 'verified-manual', transactionHash: manualHash, quantities: [0, 4, 0] }
       : entry } })
   })
   await page.goto('/markets/8453/27')
@@ -63,7 +61,6 @@ test('crowd activity lists entries and exits; an opened entry shows its checked 
   await expect(rows.nth(1).getByText('Showing the last valid allocation while you edit.', { exact: true })).toHaveCount(0)
   await rows.nth(1).getByText('Raw record', { exact: true }).click()
   await expect(rows.nth(1).getByText('a-coefficients:', { exact: false })).toContainText('[0,1,0,0,0,0]')
-  await expect(rows.nth(1).getByText(`Token IDs: ${entry.tokenIds.join(', ')}`, { exact: true })).toBeVisible()
   await rows.nth(2).locator('summary').click()
   await expect(rows.nth(2).getByText('Reference curve', { exact: true })).toBeVisible()
   await expect(rows.nth(0).locator('summary')).toHaveCount(0)

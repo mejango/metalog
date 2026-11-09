@@ -10,6 +10,7 @@ import { useWallet } from '@/providers/Providers'
 import { ForecastEditor } from './ForecastEditor'
 import { MarketFacts } from './MarketFacts'
 import { MarketLifecycle } from './MarketLifecycle'
+import { Activity } from './Activity'
 import { StageLamps } from './StageLamps'
 import { OrderBook } from './OrderBook'
 import { readBook } from '@/lib/book'
@@ -27,13 +28,12 @@ export function MarketView({ chainId, projectId }: { chainId: number; projectId:
   const { address } = useWallet()
   const queryClient = useQueryClient()
   const scope = `${chainId}:${projectId}:${address?.toLowerCase() ?? ''}`
-  const [pagination, setPagination] = useState<{ scope: string; blockNumber?: string; tokenCursor?: string; scorecardCursor?: string }>({ scope })
+  const [pagination, setPagination] = useState<{ scope: string; blockNumber?: string; scorecardCursor?: string }>({ scope })
   const page = pagination.scope === scope ? pagination : { scope }
-  const query = useQuery({ queryKey: ['market-play', chainId, projectId, address?.toLowerCase(), page.blockNumber, page.tokenCursor, page.scorecardCursor], queryFn: async ({ signal }) => {
+  const query = useQuery({ queryKey: ['market-play', chainId, projectId, address?.toLowerCase(), page.blockNumber, page.scorecardCursor], queryFn: async ({ signal }) => {
     const params = new URLSearchParams()
     if (address) params.set('account', address)
     if (page.blockNumber) params.set('blockNumber', page.blockNumber)
-    if (page.tokenCursor) params.set('tokenCursor', page.tokenCursor)
     if (page.scorecardCursor) params.set('scorecardCursor', page.scorecardCursor)
     const response = await fetch(`/api/markets/${chainId}/${projectId}/play?${params}`, { signal })
     const data = await response.json()
@@ -74,7 +74,7 @@ export function MarketView({ chainId, projectId }: { chainId: number; projectId:
   const distribution = data.positionDistribution
   const supplies = market.tiers.map(tier => Number(tier.supply))
   const mine: Record<number, number> = {}
-  for (const token of lifecycle.account?.toLowerCase() === address?.toLowerCase() ? lifecycle.inventory.tokens : []) mine[token.tierId] = (mine[token.tierId] ?? 0) + 1
+  for (const position of lifecycle.account?.toLowerCase() === address?.toLowerCase() ? lifecycle.positions : []) mine[position.tierId] = position.count
   const owned = Object.keys(mine).length > 0
   // Market exports sit with the entry downloads while entering, and on Rules for the whole game.
   const exports = (label: string, contract: boolean) => <p className="data-links">{label} <span className="pip" aria-hidden="true">|</span>
@@ -93,7 +93,7 @@ export function MarketView({ chainId, projectId }: { chainId: number; projectId:
   const shown = tab ?? focus
   const tabs: { id: Tab; label: string; count?: string }[] = [
     { id: 'market', label: 'Market', count: distribution.totalSupply },
-    { id: 'nfts', label: 'Your position', count: address && lifecycle.account?.toLowerCase() === address.toLowerCase() ? lifecycle.inventory.totalOwned : undefined },
+    { id: 'nfts', label: 'Your position', count: address && lifecycle.account?.toLowerCase() === address.toLowerCase() ? String(lifecycle.positions.reduce((sum, position) => sum + position.count, 0)) : undefined },
     { id: 'results', label: 'Results', count: lifecycle.scorecards.length ? String(lifecycle.scorecards.length) : undefined },
     { id: 'rules', label: 'Rules' },
   ]
@@ -123,14 +123,16 @@ export function MarketView({ chainId, projectId }: { chainId: number; projectId:
     <div role="tabpanel" id="panel-market" aria-labelledby="tab-market" hidden={shown !== 'market'}>
       <ForecastEditor key={`${chainId}:${projectId}`} definition={market.definition} market={market} current={current} onSubmitted={refresh}
         crowd={supplies} payout={data.ratifiedPayoutShares} live={bookOdds} exports={exports('Market', false)}
-        // ponytail: Activity stays unmounted until Bendystraw indexes Defifa; block-window log reads are too slow for long entry periods.
-        below={yours => inPlay && <OrderBook market={market} books={book?.books ?? null} sample={!!book?.sample} owned={mine} scorecards={lifecycle.scorecards} yours={yours} />} />
+        below={yours => <>
+          {inPlay && <OrderBook market={market} books={book?.books ?? null} sample={!!book?.sample} owned={mine} scorecards={lifecycle.scorecards} yours={yours} />}
+          <Activity market={market} active={shown === 'market'} />
+        </>} />
     </div>
     <MarketLifecycle key={`play:${chainId}:${projectId}`} lifecycle={lifecycle} current={current}
       panel={shown === 'nfts' || shown === 'results' ? shown : null}
       loading={query.isFetching} error={query.error?.message} onRefresh={refresh}
-      onPage={(kind, cursor) => setPagination({ ...page, blockNumber: market.blockNumber, [kind === 'inventory' ? 'tokenCursor' : 'scorecardCursor']: cursor })}
-      inventoryPaged={!!page.tokenCursor} scorecardsPaged={!!page.scorecardCursor} />
+      onPage={cursor => setPagination({ ...page, blockNumber: market.blockNumber, scorecardCursor: cursor })}
+      scorecardsPaged={!!page.scorecardCursor} />
     <div role="tabpanel" id="panel-rules" aria-labelledby="tab-rules" hidden={shown !== 'rules'}>
       <MarketFacts definition={market.definition} open />
       {exports('Export market', true)}

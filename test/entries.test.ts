@@ -5,7 +5,7 @@ import { allocatePositions } from '../src/domain/allocation'
 import type { Coefficients } from '../src/domain/distribution'
 import { marketRanges, type MarketDefinition } from '../src/domain/market'
 import { DEFIFA_ABI, deploymentForChain, NATIVE_TOKEN, type MarketSnapshot } from '../src/lib/defifa'
-import { readEntry, readEntryHistory } from '../src/lib/entries'
+import { readEntry } from '../src/lib/entries'
 
 const chainId = 8453
 const d = deploymentForChain(chainId)
@@ -26,16 +26,19 @@ function fixture(options: { mode?: 'manual'; memo?: string; missingMint?: boolea
   const transactions = options.transactions ?? 1
   const all = Array.from({ length: transactions }, (_, txIndex) => {
     const tierIds = options.mode === 'manual' ? [1, 1, 3] : ids
-    const metadata = createHookMetadata([hookMetadataId(d.implementation, 'pay')], [encodeAbiParameters([{ type: 'address' }, { type: 'uint16[]' }], [options.wrongDelegate ? hook : account, tierIds])])
+    const unique = [...new Set(tierIds)]
+    const metadata = createHookMetadata([hookMetadataId(d.implementation, 'pay')], [encodeAbiParameters(
+      [{ type: 'address' }, { type: 'uint16[]' }, { type: 'uint256[]' }],
+      [options.wrongDelegate ? hook : account, unique, unique.map(id => BigInt(tierIds.filter(item => item === id).length))])])
     const memo = options.memo ?? JSON.stringify(options.mode === 'manual'
       ? { schema: 'metalog.entry.v2', units: 'percentage-points', coefficients, mode: 'manual', quantities: [2, 0, 1], count: 3 }
       : { schema: 'metalog.entry.v1', units: 'percentage-points', coefficients, count: 10 })
     const transactionHash = hash(txIndex + 1)
     const blockHash = hash(100)
     const minted = tierIds.map((tierId, index) => ({
-      address: hook, data: '0x', topics: encodeEventTopics({ abi: DEFIFA_ABI.DefifaHook, eventName: 'Transfer', args: {
-        from: zeroAddress, to: options.outsiderMint && index === 0 ? hook : account,
-        tokenId: BigInt(tierId) * 1_000_000_000n + BigInt(index + txIndex * 10 + 1),
+      address: hook, data: encodeAbiParameters([{ type: 'uint256' }, { type: 'uint256' }], [BigInt(tierId), 1n]),
+      topics: encodeEventTopics({ abi: DEFIFA_ABI.DefifaHook, eventName: 'TransferSingle', args: {
+        operator: d.terminal, from: zeroAddress, to: options.outsiderMint && index === 0 ? hook : account,
       } }), blockNumber: number, blockHash, transactionHash, transactionIndex: txIndex, logIndex: index, removed: false,
     }))
     const transaction = { hash: transactionHash, blockHash, blockNumber: number, transactionIndex: txIndex, from: account,
@@ -59,88 +62,41 @@ function fixture(options: { mode?: 'manual'; memo?: string; missingMint?: boolea
 }
 
 describe('public entry receipt evidence', () => {
+  const entry = async (options: Parameters<typeof fixture>[0] = {}) => readEntry(fixture(options).client, market, hash(1))
   it('authenticates a direct curve and exact mint quantities without reading current ownership', async () => {
-    const { client, mocks } = fixture()
-    const page = await readEntryHistory(client, market)
-    expect(page.entries[0]).toMatchObject({ status: 'verified-curve', coefficients, quantities: allocation.quantities,
+    expect(await entry()).toMatchObject({ status: 'verified-curve', coefficients, quantities: allocation.quantities,
       account, beneficiary: account, stakeWei: '10000', timestamp: 200, blockNumber: number.toString() })
-    expect(page.entries[0].tokenIds).toHaveLength(10)
-    expect(page.complete).toBe(true)
-    expect(mocks.getLogs).toHaveBeenCalledOnce()
   })
   it('authenticates manual quantities while retaining coefficients only as reference', async () => {
-    const page = await readEntryHistory(fixture({ mode: 'manual' }).client, market)
-    expect(page.entries[0]).toMatchObject({ status: 'verified-manual', quantities: [2, 0, 1], coefficients, stakeWei: '3000' })
+    expect(await entry({ mode: 'manual' })).toMatchObject({ status: 'verified-manual', quantities: [2, 0, 1], coefficients, stakeWei: '3000' })
   })
   it.each([{ memo: '{"schema":"metalog.entry.v1"}' }, { missingMint: true }])('never authenticates malformed curve or incomplete mints %j', async options => {
-    const page = await readEntryHistory(fixture(options).client, market)
-    expect(page.entries[0].status).toBe('invalid')
-    expect(page.entries[0].coefficients).toBeNull()
+    expect(await entry(options)).toMatchObject({ status: 'invalid', coefficients: null })
   })
   it('rejects a spoofed curve whose claimed coefficients disagree with the actual mints', async () => {
     const memo = JSON.stringify({ schema: 'metalog.entry.v1', units: 'percentage-points', coefficients: [0, 5], count: 10 })
-    expect((await readEntryHistory(fixture({ memo }).client, market)).entries[0].status).toBe('invalid')
+    expect((await entry({ memo })).status).toBe('invalid')
   })
   it('rejects wrong native delegation metadata instead of relying only on a memo', async () => {
-    expect((await readEntryHistory(fixture({ wrongDelegate: true }).client, market)).entries[0].status).toBe('invalid')
+    expect((await entry({ wrongDelegate: true })).status).toBe('invalid')
   })
   it('rejects extra mints to a different recipient even when reviewed allocation subset matches', async () => {
-    expect((await readEntryHistory(fixture({ outsiderMint: true }).client, market)).entries[0].status).toBe('invalid')
+    expect((await entry({ outsiderMint: true })).status).toBe('invalid')
   })
   it('shows direct unknown memos as unrecognized, not a claimed curve', async () => {
-    expect((await readEntryHistory(fixture({ memo: 'hello' }).client, market)).entries[0]).toMatchObject({ status: 'unrecognized', coefficients: null, stakeWei: '10000' })
+    expect(await entry({ memo: 'hello' })).toMatchObject({ status: 'unrecognized', coefficients: null, stakeWei: '10000' })
   })
   it('shows wrapped effects without attributing outer value to an entry stake', async () => {
-    expect((await readEntryHistory(fixture({ target: hook }).client, market)).entries[0]).toMatchObject({ status: 'unsupported', coefficients: null, stakeWei: null })
+    expect(await entry({ target: hook })).toMatchObject({ status: 'unsupported', coefficients: null, stakeWei: null })
   })
-  it('fails the page on noncanonical receipts and provider failures', async () => {
-    await expect(readEntryHistory(fixture({ malformedReceipt: true }).client, market)).rejects.toThrow('canonical')
+  it('fails on noncanonical receipts, provider failures, receipts without mints and later blocks', async () => {
+    await expect(entry({ malformedReceipt: true })).rejects.toThrow('canonical')
     const { client, mocks } = fixture()
     mocks.getTransactionReceipt.mockRejectedValueOnce(new Error('provider down'))
-    await expect(readEntryHistory(client, market)).rejects.toThrow('provider down')
-  })
-  it('continues within a dense block without losing or repeating transactions', async () => {
-    const { client } = fixture({ transactions: 10 })
-    const page = await readEntryHistory(client, market)
-    expect(page.entries.map(entry => entry.transactionHash)).toEqual([10, 9, 8, 7, 6, 5, 4, 3].map(hash))
-    expect(page.nextCursor).toBe(`${number}:2`)
-    const second = await readEntryHistory(client, market, page.nextCursor!)
-    expect(second.entries.map(entry => entry.transactionHash)).toEqual([2, 1].map(hash))
-    expect(second.complete).toBe(true)
-  })
-  it('bounds empty pages to four 500-block windows and reports remaining coverage', async () => {
-    const { client, mocks } = fixture()
-    const late = { ...market, blockNumber: (number + 10_000n).toString() }
-    const page = await readEntryHistory(client, late)
-    expect(page.entries).toEqual([])
-    expect(page.complete).toBe(false)
-    expect(page.scannedFromBlock).toBe((number + 8_001n).toString())
-    expect(page.nextCursor).toBe(`${number + 8_000n}:2147483647`)
-    expect(mocks.getLogs).toHaveBeenCalledTimes(4)
-  })
-  it('excludes post-entry blocks from older settled snapshots', async () => {
-    const { client, mocks } = fixture()
-    mocks.getBlock.mockImplementation(async ({ blockNumber }) => ({ number: blockNumber, hash: hash(100),
-      timestamp: blockNumber < number ? 99n : blockNumber < number + 1_000n ? 200n : 1_000n }))
-    const settled = { ...market, blockNumber: (number + 5_000n).toString(), blockTimestamp: 2_000 }
-    const page = await readEntryHistory(client, settled)
-    expect(page.entries[0].status).toBe('verified-curve')
-    expect(page.scannedToBlock).toBe((number + 999n).toString())
-    expect(mocks.getLogs).toHaveBeenCalledTimes(2)
-  })
-  it('rejects cursors outside the snapshot and does not turn missing logs into history completion', async () => {
-    const { client, mocks } = fixture()
-    await expect(readEntryHistory(client, market, `${number + 1n}:0`)).rejects.toThrow('outside')
-    mocks.getLogs.mockRejectedValueOnce(new Error('rate limit'))
-    await expect(readEntryHistory(client, market)).rejects.toThrow('rate limit')
-  })
-  it('looks up one entry by transaction with the same checks as history pages', async () => {
-    const { client } = fixture()
-    const [listed] = (await readEntryHistory(client, market)).entries
-    expect(await readEntry(client, market, hash(1))).toEqual(listed)
-    const { client: noMints } = fixture({ missingMint: true, transactions: 1 })
-    const receipt = await noMints.getTransactionReceipt({ hash: hash(1) })
+    await expect(readEntry(client, market, hash(1))).rejects.toThrow('provider down')
+    const receipt = await client.getTransactionReceipt({ hash: hash(1) })
     ;(receipt.logs as unknown[]).length = 0
-    await expect(readEntry(noMints, market, hash(1))).rejects.toThrow('did not mint')
+    await expect(readEntry(client, market, hash(1))).rejects.toThrow('did not mint')
+    await expect(readEntry(fixture().client, { ...market, blockNumber: (number - 1n).toString() }, hash(1))).rejects.toThrow('did not mint')
   })
 })

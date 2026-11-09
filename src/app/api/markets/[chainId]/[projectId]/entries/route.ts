@@ -1,5 +1,5 @@
 import { projectNumber, readMarketAt } from '@/lib/defifa'
-import { readEntry, readEntryHistory, type EntryHistoryEntry } from '@/lib/entries'
+import { readEntry, type EntryHistoryEntry } from '@/lib/entries'
 import type { MarketSnapshot } from '@/lib/defifa'
 import { chainForId, publicClientForChain } from '@/lib/wallet'
 import { assertChain } from '@/lib/defifa-deployment'
@@ -10,7 +10,6 @@ export async function GET(request: Request, { params }: { params: Promise<{ chai
   const { chainId, projectId } = await params
   const query = new URL(request.url).searchParams
   const blockNumber = query.get('blockNumber')
-  const cursor = query.get('cursor')
   const tx = query.get('tx')
   // Public read-only evidence; this does not admit an origin to wallet or pin APIs.
   const headers = { 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' }
@@ -19,8 +18,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ chai
     chainForId(Number(chainId))
     projectNumber(projectId)
     if (blockNumber !== null && (!/^\d{1,78}$/.test(blockNumber) || BigInt(blockNumber) >= 2n ** 256n)) throw new Error('The snapshot block is invalid.')
-    if (cursor !== null && (!/^\d{1,78}:\d{1,10}$/.test(cursor) || !blockNumber)) throw new Error('Entry pagination requires a valid cursor and original snapshot block.')
-    if (tx !== null && !/^0x[0-9a-fA-F]{64}$/.test(tx)) throw new Error('The transaction hash is invalid.')
+    if (tx === null || !/^0x[0-9a-fA-F]{64}$/.test(tx)) throw new Error('The transaction hash is invalid.')
   } catch (cause) {
     return Response.json({ error: cause instanceof Error ? cause.message : 'Invalid entry request.' }, { status: 400, headers })
   }
@@ -29,9 +27,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ chai
     await assertChain(client, Number(chainId))
     const block = await client.getBlock(blockNumber === null ? undefined : { blockNumber: BigInt(blockNumber) })
     const market = await readMarketAt(client, Number(chainId), projectId, block.number, Number(block.timestamp))
-    if (tx !== null) return Response.json({ entry: withChart(market, await readEntry(client, market, tx as `0x${string}`)), hook: market.hook, ranges: market.ranges }, { headers })
-    const evidence = await readEntryHistory(client, market, cursor ?? undefined)
-    return Response.json({ ...evidence, entries: evidence.entries.map(entry => withChart(market, entry)), hook: market.hook, ranges: market.ranges, snapshotBlockHash: block.hash }, { headers })
+    return Response.json({ entry: withChart(market, await readEntry(client, market, tx as `0x${string}`)), hook: market.hook, ranges: market.ranges }, { headers })
   } catch {
     return Response.json({ error: 'Entry history could not be verified. Try again.', }, { status: 503, headers })
   }

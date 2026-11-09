@@ -4,7 +4,7 @@ import type { LifecycleSnapshot } from '../../src/lib/defifa-lifecycle'
 const opening = Date.UTC(2026, 9, 11) / 1000
 const snapshot: LifecycleSnapshot = {
   market: {
-    chainId: 84532, projectId: '46', hook: '0x1111111111111111111111111111111111111111', governor: '0x2222222222222222222222222222222222222222',
+    chainId: 84532, projectId: '46', hook: '0x1111111111111111111111111111111111111111', governor: '0x2222222222222222222222222222222222222222', referee: '0x2222222222222222222222222222222222222222',
     definition: {
       schemaVersion: 1, settlement: 'defifa-scorecard', prompt: 'Timing regression market', source: 'Test source', resolutionRule: 'Observe the two UTC times.',
       entryOpensAt: opening, entryClosesAt: opening + 600, resolvesAt: opening + 1500, rangeCount: 3, rangeWidth: 1, unitPriceWei: '1000000000000',
@@ -14,7 +14,7 @@ const snapshot: LifecycleSnapshot = {
     tiers: [1, 2, 3].map(tierId => ({ tierId, supply: '0', entrySupply: null, priceWei: '1000000000000', remainingSupply: '999999999' })),
     ratifiedScorecardId: null, ratifiedWeights: null, cashOutWeightTotal: '1000000000000000000', commitmentsFulfilled: false, noContestTriggered: false,
   },
-  account: null, inventory: { tokens: [], totalOwned: '0', totalCandidates: '0', nextCursor: null, complete: true }, delegates: [],
+  account: null, positions: [], delegates: [],
   scorecards: [], scorecardsNextCursor: '99', scorecardsComplete: false, attestationGraceSeconds: 86400, timelockSeconds: 3600,
   noContestAfter: opening + 606300, canSubmitScorecard: false, canDelegate: true, canFulfill: false, canTriggerNoContest: false, cashOutMode: 'refund',
 }

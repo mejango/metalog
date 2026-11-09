@@ -14,7 +14,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ chai
     chainForId(Number(chainId))
     projectNumber(projectId)
     if (blockNumber !== null && !/^\d{1,78}$/.test(blockNumber)) throw new Error('The snapshot block is invalid.')
-    if (cursor !== null && (!/^\d{1,78}$/.test(cursor) || !blockNumber)) throw new Error('Activity pagination requires a valid cursor and original snapshot block.')
+    if (cursor !== null && !/^\d{1,10}$/.test(cursor)) throw new Error('The activity cursor is invalid.')
   } catch (cause) {
     return Response.json({ error: cause instanceof Error ? cause.message : 'Invalid activity request.' }, { status: 400, headers })
   }
@@ -23,7 +23,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ chai
     await assertChain(client, Number(chainId))
     const block = await client.getBlock(blockNumber === null ? undefined : { blockNumber: BigInt(blockNumber) })
     const market = await readMarketAt(client, Number(chainId), projectId, block.number, Number(block.timestamp))
-    return Response.json(await readActivity(client, market, cursor ?? undefined), { headers })
+    return Response.json(await readActivity(market, cursor === null ? undefined : Number(cursor)), { headers })
   } catch {
     return Response.json({ error: 'Activity could not be read. Try again.' }, { status: 503, headers })
   }

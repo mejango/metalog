@@ -20,19 +20,3 @@ export function scorecardWeightsFromPercentages(
   }
   return weights.filter(item => item.weight !== '0')
 }
-
-/** Attestation power each range with positions adds to the base quorum (DefifaGovernor). */
-export const MAX_ATTESTATION_POWER_TIER = 1_000_000_000n
-
-/**
- * The quorum a result must reach, as the governor snapshots it at submission: the base quorum
- * plus a penalty that grows with the square of the largest payout share, so a result paying one
- * range needs nearly every other range to attest.
- */
-export function scorecardQuorum(baseQuorum: bigint, weights: readonly TierWeight[]): bigint {
-  if (baseQuorum < MAX_ATTESTATION_POWER_TIER) return baseQuorum
-  let headroom = baseQuorum - MAX_ATTESTATION_POWER_TIER
-  if (headroom > BigInt(weights.length)) headroom -= BigInt(weights.length)
-  const largest = weights.reduce((max, item) => BigInt(item.weight) > max ? BigInt(item.weight) : max, 0n)
-  return baseQuorum + headroom * (largest * largest / SCORECARD_WEIGHT_TOTAL) / SCORECARD_WEIGHT_TOTAL
-}

@@ -1,21 +1,20 @@
 import {
-  decodeAbiParameters,
-  encodeFunctionData, getAbiItem, parseAbi, parseEventLogs, zeroAddress,
+  decodeAbiParameters, encodeAbiParameters,
+  encodeFunctionData, getAbiItem, getAddress, parseAbi, parseEventLogs, zeroAddress,
   type Address, type Hex, type PublicClient, type TransactionReceipt,
 } from 'viem'
-import { build721CashOutMetadata, getDefifaHoldings } from '@bananapus/nana-sdk-core/v6'
-import { NATIVE_TOKEN, projectNumber, readMarketAt, signer, type MarketSnapshot } from './defifa'
-import { assertChain, contractRead, DEFIFA_ABI, deploymentForChain, sameAddress, TOKEN_MULTIPLIER, verifyDefifaDeployment } from './defifa-deployment'
-import { chainForId, publicClientForChain } from './wallet'
+import { NATIVE_TOKEN, projectNumber, quantitiesOf, readMarketAt, receiptMoves, signer, type MarketSnapshot } from './defifa'
+import { assertChain, contractRead, DEFIFA_ABI, deploymentForChain, hookMetadata, sameAddress, verifyDefifaDeployment } from './defifa-deployment'
+import { bendystraw } from './bendystraw'
+import { publicClientForChain } from './wallet'
 import { firstBlockAtTimestamp, MAX_LOG_BLOCKS } from './history-blocks'
 import type { PreparedTransaction } from './transaction'
 import { decodeDefifaTransactionCall } from './transaction-scope'
-import { SCORECARD_WEIGHT_TOTAL, scorecardQuorum, type TierWeight } from '../domain/scorecard'
+import { SCORECARD_WEIGHT_TOTAL, type TierWeight } from '../domain/scorecard'
 import { MAX_POSITIONS } from '../domain/allocation'
 import { phaseCapabilities, type CashOutMode } from './lifecycle-phase'
 export { SCORECARD_WEIGHT_TOTAL, scorecardWeightsFromPercentages, type TierWeight } from '../domain/scorecard'
 
-const TOKEN_PAGE_SIZE = 200
 const MAX_LOG_REQUESTS = 16
 // Center's hosted provider rejects wider windows with a generic -32005. Bound
 // requests up front; do not mistake that same code on a small request for a range limit.
@@ -23,8 +22,9 @@ const MAX_SCORECARDS_PER_PAGE = 100
 const STATE_NAMES = ['Pending', 'Active', 'Defeated', 'Succeeded', 'Queued', 'Ratified'] as const
 const ERC20_ABI = parseAbi(['function decimals() view returns (uint8)', 'event Transfer(address indexed from,address indexed to,uint256 value)'])
 
-export type OwnedPosition = { tokenId: string; tierId: number }
-export type LifecyclePageOptions = { blockNumber?: string; tokenCursor?: string; scorecardCursor?: string }
+/** An ERC-1155 balance: every position in a range shares the range's token ID. */
+export type OwnedPosition = { tierId: number; count: number }
+export type LifecyclePageOptions = { blockNumber?: string; scorecardCursor?: string }
 export type ScorecardSnapshot = {
   scorecardId: string
   weights: TierWeight[]
@@ -35,24 +35,23 @@ export type ScorecardSnapshot = {
   attestationsBegin: number
   gracePeriodEnds: number
   attestationCount: string
-  /** Attestation weight this result needs, as the governor snapshotted it at submission. */
+  /** Attestation weight this result needs, as the referee snapshotted it at submission. */
   quorum: string
   accountWeight: string | null
   hasAttested: boolean
+  /** Sent from the referee to the governor, which ratifies after its timelock. */
+  forwarded: boolean
+  /** When the governor's timelock ends, once forwarded. */
+  ratifiableAt: number | null
   canAttest: boolean
   canRevoke: boolean
+  canForward: boolean
   canRatify: boolean
 }
 export type LifecycleSnapshot = {
   market: MarketSnapshot
   account: Address | null
-  inventory: {
-    tokens: OwnedPosition[]
-    totalOwned: string
-    totalCandidates: string
-    nextCursor: string | null
-    complete: boolean
-  }
+  positions: OwnedPosition[]
   delegates: { tierId: number; delegate: Address }[]
   scorecards: ScorecardSnapshot[]
   scorecardsNextCursor: string | null
@@ -67,13 +66,13 @@ export type LifecycleSnapshot = {
   cashOutMode: CashOutMode
 }
 export type LifecycleAction =
-  | { kind: 'transfer'; tokenId: string; to: Address }
+  | { kind: 'transfer'; tierId: number; count: number; to: Address }
   | { kind: 'delegate'; tierIds: number[]; delegatee: Address }
   | { kind: 'submit-scorecard'; weights: TierWeight[] }
   | { kind: 'attest' | 'revoke'; scorecardId: string }
-  | { kind: 'ratify'; weights: TierWeight[] }
+  | { kind: 'forward' | 'ratify'; weights: TierWeight[] }
   | { kind: 'fulfill' | 'no-contest' }
-  | { kind: 'cash-out'; tokenIds: string[]; minReclaimedWei: string }
+  | { kind: 'cash-out'; positions: OwnedPosition[]; minReclaimedWei: string }
 export type CashOutQuote = {
   blockNumber: string
   reclaimWei: string
@@ -86,7 +85,6 @@ export type LifecycleRequest = Pick<PreparedTransaction, 'chainId' | 'account' |
 
 type NativeWeight = { id: bigint; cashOutWeight: bigint }
 type SubmittedArgs = { gameId: bigint; scorecardId: bigint; tierWeights: NativeWeight[]; caller: Address }
-type TransferArgs = { from: Address; to: Address; tokenId: bigint }
 
 function uint(value: string, name: string, zero = true): bigint {
   if (!/^(0|[1-9]\d{0,77})$/.test(value) || BigInt(value) >= 1n << 256n || (!zero && value === '0')) {
@@ -114,16 +112,18 @@ function nativeWeights(market: MarketSnapshot, weights: TierWeight[]): NativeWei
   return result
 }
 
-function tokenIdsFor(market: MarketSnapshot, ids: readonly string[]): bigint[] {
-  if (!Array.isArray(ids) || !ids.length || ids.length > MAX_POSITIONS) throw new Error(`Select between 1 and ${MAX_POSITIONS} positions.`)
-  const result = ids.map(value => uint(value, 'position ID', false))
-  if (new Set(result.map(String)).size !== result.length) throw new Error('Select each position only once.')
-  for (const id of result) {
-    if (id % TOKEN_MULTIPLIER === 0n || !market.ranges.some(range => BigInt(range.tierId) === id / TOKEN_MULTIPLIER)) {
-      throw new Error('A selected position is outside this market’s ranges.')
+/** Ascending, unique ranges of this market with positive whole counts. */
+function positionsFor(market: MarketSnapshot, positions: readonly OwnedPosition[]): OwnedPosition[] {
+  if (!Array.isArray(positions) || !positions.length || positions.length > market.ranges.length) throw new Error('Select positions in this market’s ranges.')
+  let previous = 0
+  for (const { tierId, count } of positions) {
+    if (!Number.isSafeInteger(tierId) || tierId <= previous || !market.ranges.some(range => range.tierId === tierId)) {
+      throw new Error('Selected ranges must be unique and in ascending order.')
     }
+    if (!Number.isSafeInteger(count) || count < 1 || count > MAX_POSITIONS) throw new Error(`Select between 1 and ${MAX_POSITIONS} positions per range.`)
+    previous = tierId
   }
-  return result.sort((a, b) => a < b ? -1 : a > b ? 1 : 0)
+  return positions.map(({ tierId, count }) => ({ tierId, count }))
 }
 
 async function freshMarket(market: MarketSnapshot): Promise<{ client: PublicClient; market: MarketSnapshot }> {
@@ -141,23 +141,19 @@ function readAt(client: PublicClient, market: MarketSnapshot) {
     contractRead<T>(client, address, contract, fn, args, BigInt(market.blockNumber))
 }
 
-async function assertOwned(client: PublicClient, market: MarketSnapshot, ids: readonly bigint[], account: Address) {
-  const read = readAt(client, market)
-  const owners = await Promise.all(ids.map(id => read<Address>(market.hook, 'DefifaHook', 'ownerOf', [id])))
-  if (owners.some(owner => !sameAddress(owner, account))) throw new Error('Your wallet no longer owns every selected position.')
+async function assertOwned(client: PublicClient, market: MarketSnapshot, positions: readonly OwnedPosition[], account: Address) {
+  const held = await readPositions(client, market, account)
+  if (positions.some(position => (held.find(item => item.tierId === position.tierId)?.count ?? 0) < position.count)) {
+    throw new Error('Your wallet no longer holds every selected position.')
+  }
 }
 
-async function readInventory(client: PublicClient, market: MarketSnapshot, account: Address | null, cursor?: string) {
-  if (!account) return { tokens: [] as OwnedPosition[], totalOwned: '0', totalCandidates: '0', nextCursor: null, complete: true }
-  const holdings = await getDefifaHoldings(client, {
-    chainId: chainForId(market.chainId).id, projectId: projectNumber(market.projectId), account,
-    expectedHook: market.hook, blockNumber: BigInt(market.blockNumber), cursor, limit: TOKEN_PAGE_SIZE,
-  })
-  return {
-    tokens: holdings.tokens.map(token => ({ tokenId: token.tokenId.toString(), tierId: token.tierId })),
-    totalOwned: holdings.totalOwned.toString(), totalCandidates: holdings.totalCandidates.toString(),
-    nextCursor: holdings.nextCursor, complete: holdings.complete,
-  }
+/** One batched balance read covers every range. */
+async function readPositions(client: PublicClient, market: MarketSnapshot, account: Address | null): Promise<OwnedPosition[]> {
+  if (!account) return []
+  const balances = await readAt(client, market)<readonly bigint[]>(market.hook, 'DefifaHook', 'balanceOfBatch',
+    [market.ranges.map(() => account), market.ranges.map(range => BigInt(range.tierId))])
+  return market.ranges.flatMap((range, index) => balances[index] > 0n ? [{ tierId: range.tierId, count: Number(balances[index]) }] : [])
 }
 
 /** Bounded binary search finds the first block where scorecard submissions could exist. */
@@ -172,7 +168,7 @@ async function firstScoringBlock(client: PublicClient, market: MarketSnapshot): 
 }
 
 async function readScorecards(
-  client: PublicClient, market: MarketSnapshot, account: Address | null, grace: number, cursor?: string,
+  client: PublicClient, market: MarketSnapshot, account: Address | null, grace: number, timelock: number, cursor?: string,
 ): Promise<{ scorecards: ScorecardSnapshot[]; next: string | null; complete: boolean }> {
   if (market.phase < 3) return { scorecards: [], next: null, complete: true }
   const head = BigInt(market.blockNumber)
@@ -180,7 +176,7 @@ async function readScorecards(
   if (end > head) throw new Error('The results cursor is outside this snapshot.')
   const first = await firstScoringBlock(client, market)
   if (end < first) return { scorecards: [], next: null, complete: true }
-  const event = getAbiItem({ abi: DEFIFA_ABI.DefifaGovernor, name: 'ScorecardSubmitted' })
+  const event = getAbiItem({ abi: DEFIFA_ABI.DefifaVotingReferee, name: 'ScorecardSubmitted' })
   if (!event || event.type !== 'event') throw new Error('The result event ABI is unavailable.')
   // Scan indexed game history in Center-compatible windows. Reduce only an explicitly
   // unsupported log range/result size; transport outages and rate limits remain errors. Accepted chunks
@@ -192,7 +188,7 @@ async function readScorecards(
   for (let requests = 0; nextEnd >= first && requests < MAX_LOG_REQUESTS; requests++) {
     const fromBlock = nextEnd - first + 1n > span ? nextEnd - span + 1n : first
     try {
-      const result = await client.getLogs({ address: market.governor, event, args: { gameId: projectNumber(market.projectId) }, fromBlock, toBlock: nextEnd, strict: true })
+      const result = await client.getLogs({ address: market.referee, event, args: { gameId: projectNumber(market.projectId) }, fromBlock, toBlock: nextEnd, strict: true })
       if (collected.length + result.length > MAX_SCORECARDS_PER_PAGE) {
         if (span === 1n) {
           if (collected.length) break
@@ -211,13 +207,12 @@ async function readScorecards(
     }
   }
   if (!madeProgress) throw new Error('Results history could not be read within 16 Center requests. Try again later.')
-  const logs = parseEventLogs({ abi: DEFIFA_ABI.DefifaGovernor, logs: collected, eventName: 'ScorecardSubmitted', strict: true })
+  const logs = parseEventLogs({ abi: DEFIFA_ABI.DefifaVotingReferee, logs: collected, eventName: 'ScorecardSubmitted', strict: true })
     .sort((a, b) => a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1)
   const read = readAt(client, market)
   const id = projectNumber(market.projectId)
   const timestampByBlock = new Map<string, Promise<number>>()
-  // Ranges are frozen while scoring, so today's base quorum is the one each result snapshotted.
-  const baseQuorum = logs.length ? await read<bigint>(market.governor, 'DefifaGovernor', 'quorum', [id]) : 0n
+  const forwardedId = logs.length ? await read<bigint>(market.referee, 'DefifaVotingReferee', 'forwardedScorecardIdOf', [id]) : 0n
   const cards = await Promise.all(logs.map(async log => {
     const args = log.args as unknown as SubmittedArgs
     if (args.gameId !== id || log.blockNumber === null || log.removed) throw new Error('The result log does not match this snapshot.')
@@ -225,25 +220,30 @@ async function readScorecards(
     if (!timestampByBlock.has(blockKey)) timestampByBlock.set(blockKey, client.getBlock({ blockNumber: log.blockNumber }).then(block => Number(block.timestamp)))
     const submittedAt = await timestampByBlock.get(blockKey)!
     const attestationsBegin = Math.max(market.definition.resolvesAt, submittedAt + 1)
-    const [state, count, hasAttested, weight] = await Promise.all([
-      read<number>(market.governor, 'DefifaGovernor', 'stateOf', [id, args.scorecardId]),
-      read<bigint>(market.governor, 'DefifaGovernor', 'attestationCountOf', [id, args.scorecardId]),
-      account ? read<boolean>(market.governor, 'DefifaGovernor', 'hasAttestedTo', [id, args.scorecardId, account]) : false,
-      account ? read<bigint>(market.governor, 'DefifaGovernor', 'getBWAAttestationWeight', [id, args.scorecardId, account, submittedAt - 1]) : null,
+    const forwarded = forwardedId === args.scorecardId
+    const [refereeState, count, quorum, hasAttested, weight, governorState, queuedAt] = await Promise.all([
+      read<number>(market.referee, 'DefifaVotingReferee', 'stateOf', [id, args.scorecardId]),
+      read<bigint>(market.referee, 'DefifaVotingReferee', 'attestationCountOf', [id, args.scorecardId]),
+      read<bigint>(market.referee, 'DefifaVotingReferee', 'quorumOf', [id, args.scorecardId]),
+      account ? read<boolean>(market.referee, 'DefifaVotingReferee', 'hasAttestedTo', [id, args.scorecardId, account]) : false,
+      account ? read<bigint>(market.referee, 'DefifaVotingReferee', 'getBWAAttestationWeight', [id, args.scorecardId, account, submittedAt - 1]) : null,
+      forwarded ? read<number>(market.governor, 'DefifaGovernor', 'stateOf', [id, args.scorecardId]) : null,
+      forwarded ? read<bigint>(market.governor, 'DefifaGovernor', 'scorecardSubmittedAtOf', [id, args.scorecardId]) : null,
     ])
-    if (!STATE_NAMES[Number(state)]) throw new Error('The governor returned an unknown result state.')
+    // Once forwarded, the governor's queue, timelock and ratification are the result's state.
+    const state = Number(governorState ?? refereeState)
+    if (!STATE_NAMES[state]) throw new Error('The referee returned an unknown result state.')
     return {
       scorecardId: args.scorecardId.toString(), weights: args.tierWeights.map(item => ({ tierId: Number(item.id), weight: item.cashOutWeight.toString() })),
-      submitter: args.caller, state: Number(state), stateName: STATE_NAMES[Number(state)], submittedAt, attestationsBegin,
-      gracePeriodEnds: attestationsBegin + grace, attestationCount: count.toString(),
-      quorum: scorecardQuorum(baseQuorum, args.tierWeights.map(item => ({ tierId: Number(item.id), weight: item.cashOutWeight.toString() }))).toString(), accountWeight: weight?.toString() ?? null,
-      hasAttested, canAttest: !!account && market.phase === 3 && [1, 3, 4].includes(Number(state)) && !hasAttested && weight !== null && weight > 0n,
-      canRevoke: !!account && Number(state) === 1 && hasAttested,
-      canRatify: !!account && market.phase === 3 && Number(state) === 3,
+      submitter: args.caller, state, stateName: STATE_NAMES[state], submittedAt, attestationsBegin,
+      gracePeriodEnds: attestationsBegin + grace, attestationCount: count.toString(), quorum: quorum.toString(), accountWeight: weight?.toString() ?? null,
+      hasAttested, forwarded, ratifiableAt: queuedAt === null ? null : Number(queuedAt) + timelock,
+      canAttest: !!account && market.phase === 3 && !forwarded && [1, 3].includes(Number(refereeState)) && !hasAttested && weight !== null && weight > 0n,
+      canRevoke: !!account && !forwarded && Number(refereeState) === 1 && hasAttested,
+      canForward: !!account && market.phase === 3 && forwardedId === 0n && Number(refereeState) === 3,
+      canRatify: !!account && market.phase === 3 && forwarded && state === 3,
     }
   }))
-  // The native state is authority; quorum is recomputed from the governor's formula, and quorumReachedAt
-  // stays private, so the timelock's end is shown as "from" the grace end rather than invented.
   return { scorecards: cards.reverse(), next: nextEnd >= first ? nextEnd.toString() : null, complete: nextEnd < first }
 }
 
@@ -273,16 +273,16 @@ export async function readLifecycle(
   const d = deploymentForChain(chainId)
   const read = readAt(client, market)
   const id = projectNumber(projectId)
-  const [grace, timelock, safety, inventory, delegates] = await Promise.all([
-    read<bigint>(market.governor, 'DefifaGovernor', 'attestationGracePeriodOf', [id]),
+  const [grace, timelock, safety, positions, delegates] = await Promise.all([
+    read<bigint>(market.referee, 'DefifaVotingReferee', 'attestationGracePeriodOf', [id]),
     read<bigint>(market.governor, 'DefifaGovernor', 'timelockDurationOf', [id]),
     read<readonly [bigint, number]>(d.deployer, 'DefifaDeployer', 'safetyParamsOf', [id]),
-    readInventory(client, market, owner, options.tokenCursor),
+    readPositions(client, market, owner),
     owner ? Promise.all(market.ranges.map(async range => ({ tierId: range.tierId, delegate: await read<Address>(market.hook, 'DefifaHook', 'getTierDelegateOf', [owner, BigInt(range.tierId)]) }))) : [],
   ])
-  const cards = await readScorecards(client, market, owner, Number(grace), options.scorecardCursor)
+  const cards = await readScorecards(client, market, owner, Number(grace), Number(timelock), options.scorecardCursor)
   return {
-    market, account: owner, inventory, delegates, scorecards: cards.scorecards,
+    market, account: owner, positions, delegates, scorecards: cards.scorecards,
     scorecardsNextCursor: cards.next, scorecardsComplete: cards.complete,
     attestationGraceSeconds: Number(grace), timelockSeconds: Number(timelock),
     noContestAfter: market.definition.entryClosesAt + Number(safety[1]),
@@ -290,23 +290,28 @@ export async function readLifecycle(
   }
 }
 
-function cashOutMetadata(chainId: number, ids: readonly bigint[]): Hex {
-  return build721CashOutMetadata({ metadataIdTarget: deploymentForChain(chainId).implementation, tokenIds: [...ids] })
+function idsAndAmounts(positions: readonly OwnedPosition[]) {
+  return [positions.map(position => BigInt(position.tierId)), positions.map(position => BigInt(position.count))] as const
 }
 
-function cashOutArgs(market: MarketSnapshot, account: Address, ids: readonly bigint[], minimum: bigint) {
-  return [account, projectNumber(market.projectId), 0n, NATIVE_TOKEN, minimum, account, cashOutMetadata(market.chainId, ids)] as const
+function cashOutMetadata(chainId: number, positions: readonly OwnedPosition[]): Hex {
+  return hookMetadata(deploymentForChain(chainId).implementation, 'cashOut',
+    encodeAbiParameters([{ type: 'uint256[]' }, { type: 'uint256[]' }], idsAndAmounts(positions)))
 }
 
-async function quoteAt(client: PublicClient, market: MarketSnapshot, ids: readonly bigint[], account: Address): Promise<CashOutQuote> {
+function cashOutArgs(market: MarketSnapshot, account: Address, positions: readonly OwnedPosition[], minimum: bigint) {
+  return [account, projectNumber(market.projectId), 0n, NATIVE_TOKEN, minimum, account, cashOutMetadata(market.chainId, positions)] as const
+}
+
+async function quoteAt(client: PublicClient, market: MarketSnapshot, positions: readonly OwnedPosition[], account: Address): Promise<CashOutQuote> {
   if (!phaseCapabilities(market, true).cashOutMode) throw new Error('Positions cannot be cashed out during this game phase.')
   if (market.phase === 5 && !market.noContestTriggered) throw new Error('Open the native no-contest refunds before cashing out.')
-  await assertOwned(client, market, ids, account)
+  await assertOwned(client, market, positions, account)
   const d = deploymentForChain(market.chainId)
   const read = readAt(client, market)
   const [simulation, rewards, defifaToken, baseProtocolToken] = await Promise.all([
-    client.simulateContract({ address: d.terminal, abi: DEFIFA_ABI.JBMultiTerminal, functionName: 'cashOutTokensOf', args: cashOutArgs(market, account, ids, 0n), account, blockNumber: BigInt(market.blockNumber) }),
-    read<readonly [bigint, bigint]>(market.hook, 'DefifaHook', 'tokensClaimableFor', [ids]),
+    client.simulateContract({ address: d.terminal, abi: DEFIFA_ABI.JBMultiTerminal, functionName: 'cashOutTokensOf', args: cashOutArgs(market, account, positions, 0n), account, blockNumber: BigInt(market.blockNumber) }),
+    read<readonly [bigint, bigint]>(market.hook, 'DefifaHook', 'tokensClaimableFor', idsAndAmounts(positions)),
     read<Address>(market.hook, 'DefifaHook', 'DEFIFA_TOKEN'),
     read<Address>(market.hook, 'DefifaHook', 'BASE_PROTOCOL_TOKEN'),
   ])
@@ -318,27 +323,29 @@ async function quoteAt(client: PublicClient, market: MarketSnapshot, ids: readon
   }
 }
 
-export async function readCashOutQuote(market: MarketSnapshot, tokenIds: string[], account: Address): Promise<CashOutQuote> {
+export async function readCashOutQuote(market: MarketSnapshot, positions: OwnedPosition[], account: Address): Promise<CashOutQuote> {
   const current = await freshMarket(market)
-  return quoteAt(current.client, current.market, tokenIdsFor(current.market, tokenIds), signer(account))
+  return quoteAt(current.client, current.market, positionsFor(current.market, positions), signer(account))
 }
 
 function actionCall(market: MarketSnapshot, action: LifecycleAction, account: Address): Pick<PreparedTransaction, 'to' | 'data' | 'value' | 'title' | 'details'> {
   const d = deploymentForChain(market.chainId)
   const id = projectNumber(market.projectId)
-  let to: Address = market.governor
-  let abi = DEFIFA_ABI.DefifaGovernor
+  let to: Address = market.referee
+  let abi = DEFIFA_ABI.DefifaVotingReferee
   let fn: string
   let args: readonly unknown[]
   let title: string
   const details = [{ label: 'Market', value: `${market.projectId} · ${market.definition.prompt}` }]
   switch (action.kind) {
     case 'transfer': {
-      const [tokenId] = tokenIdsFor(market, [action.tokenId])
+      const [position] = positionsFor(market, [{ tierId: action.tierId, count: action.count }])
       const recipient = signer(action.to)
-      if (sameAddress(recipient, account)) throw new Error('Choose a different recipient for this position.')
-      to = market.hook; abi = DEFIFA_ABI.DefifaHook; fn = 'safeTransferFrom'; args = [account, recipient, tokenId]; title = 'Send position'
-      details.push({ label: 'Position', value: tokenId.toString() }, { label: 'Recipient', value: recipient })
+      if (sameAddress(recipient, account)) throw new Error('Choose a different recipient for these positions.')
+      to = market.hook; abi = DEFIFA_ABI.DefifaHook; fn = 'safeTransferFrom'
+      args = [account, recipient, BigInt(position.tierId), BigInt(position.count), '0x']; title = 'Send positions'
+      details.push({ label: 'Range', value: market.ranges.find(range => range.tierId === position.tierId)!.label },
+        { label: 'Positions', value: String(position.count) }, { label: 'Recipient', value: recipient })
       break
     }
     case 'delegate': {
@@ -352,10 +359,11 @@ function actionCall(market: MarketSnapshot, action: LifecycleAction, account: Ad
       details.push({ label: 'Ranges', value: action.tierIds.join(', ') }, { label: 'Delegate', value: delegate })
       break
     }
-    case 'submit-scorecard': case 'ratify': {
+    case 'submit-scorecard': case 'forward': case 'ratify': {
       const weights = nativeWeights(market, action.weights)
-      fn = action.kind === 'ratify' ? 'ratifyScorecardFrom' : 'submitScorecardFor'; args = [id, weights]
-      title = action.kind === 'ratify' ? 'Ratify result' : 'Propose result'
+      if (action.kind === 'ratify') { to = market.governor; abi = DEFIFA_ABI.DefifaGovernor }
+      fn = { 'submit-scorecard': 'submitScorecardFor', forward: 'forwardScorecardFor', ratify: 'ratifyScorecardFrom' }[action.kind]; args = [id, weights]
+      title = { 'submit-scorecard': 'Propose result', forward: 'Queue result', ratify: 'Ratify result' }[action.kind]
       details.push(...weights.map(item => ({ label: `Range ${item.id}`, value: `${item.cashOutWeight} / ${SCORECARD_WEIGHT_TOTAL}` })))
       break
     }
@@ -368,11 +376,12 @@ function actionCall(market: MarketSnapshot, action: LifecycleAction, account: Ad
       fn = action.kind === 'fulfill' ? 'fulfillCommitmentsOf' : 'triggerNoContestFor'; args = [id]
       title = action.kind === 'fulfill' ? 'Fulfill game commitments' : 'Open no-contest refunds'; break
     case 'cash-out': {
-      const ids = tokenIdsFor(market, action.tokenIds)
+      const positions = positionsFor(market, action.positions)
       const minimum = uint(action.minReclaimedWei, 'minimum reclaim amount')
-      to = d.terminal; abi = DEFIFA_ABI.JBMultiTerminal; fn = 'cashOutTokensOf'; args = cashOutArgs(market, account, ids, minimum)
+      to = d.terminal; abi = DEFIFA_ABI.JBMultiTerminal; fn = 'cashOutTokensOf'; args = cashOutArgs(market, account, positions, minimum)
       title = market.phase === 4 ? 'Cash out positions and claim protocol tokens' : 'Refund positions'
-      details.push({ label: 'Positions to burn', value: ids.join(', ') }, { label: 'Minimum ETH (wei)', value: minimum.toString() }); break
+      details.push(...positions.map(position => ({ label: `Burn in ${market.ranges.find(range => range.tierId === position.tierId)!.label}`, value: String(position.count) })),
+        { label: 'Minimum ETH (wei)', value: minimum.toString() }); break
     }
   }
   return { to, data: encodeFunctionData({ abi, functionName: fn, args }), value: 0n, title, details }
@@ -384,7 +393,7 @@ async function assertAction(client: PublicClient, market: MarketSnapshot, action
   const read = readAt(client, market)
   const id = projectNumber(market.projectId)
   switch (action.kind) {
-    case 'transfer': await assertOwned(client, market, tokenIdsFor(market, [action.tokenId]), account); break
+    case 'transfer': await assertOwned(client, market, [{ tierId: action.tierId, count: action.count }], account); break
     case 'delegate': if (market.phase !== 1) throw new Error('Attestation delegation can only change while entry is open.'); break
     case 'submit-scorecard':
       if (market.phase !== 3) throw new Error('Results can only be proposed during the native scoring phase.')
@@ -395,23 +404,32 @@ async function assertAction(client: PublicClient, market: MarketSnapshot, action
     case 'attest': case 'revoke': {
       const cardId = uint(action.scorecardId, 'result ID', false)
       const [state, attested] = await Promise.all([
-        read<number>(market.governor, 'DefifaGovernor', 'stateOf', [id, cardId]),
-        read<boolean>(market.governor, 'DefifaGovernor', 'hasAttestedTo', [id, cardId, account]),
+        read<number>(market.referee, 'DefifaVotingReferee', 'stateOf', [id, cardId]),
+        read<boolean>(market.referee, 'DefifaVotingReferee', 'hasAttestedTo', [id, cardId, account]),
       ])
-      if (action.kind === 'attest' && (market.phase !== 3 || ![1, 3, 4].includes(Number(state)) || attested)) throw new Error('This wallet cannot attest to that result now.')
+      if (action.kind === 'attest' && (market.phase !== 3 || ![1, 3].includes(Number(state)) || attested)) throw new Error('This wallet cannot attest to that result now.')
       if (action.kind === 'revoke' && (Number(state) !== 1 || !attested)) throw new Error('An attestation can only be revoked while its result is active.')
+      break
+    }
+    case 'forward': {
+      const cardId = await read<bigint>(market.referee, 'DefifaVotingReferee', 'scorecardIdOf', [market.hook, nativeWeights(market, action.weights)])
+      const [state, forwarded] = await Promise.all([
+        read<number>(market.referee, 'DefifaVotingReferee', 'stateOf', [id, cardId]),
+        read<bigint>(market.referee, 'DefifaVotingReferee', 'forwardedScorecardIdOf', [id]),
+      ])
+      if (market.phase !== 3 || Number(state) !== 3 || forwarded !== 0n) throw new Error('The result has not reached quorum after its grace period, or another result is queued.')
       break
     }
     case 'ratify': {
       const cardId = await read<bigint>(market.governor, 'DefifaGovernor', 'scorecardIdOf', [market.hook, nativeWeights(market, action.weights)])
-      const state = await read<number>(market.governor, 'DefifaGovernor', 'stateOf', [id, cardId])
-      if (market.phase !== 3 || Number(state) !== 3) throw new Error('The result has not completed the native quorum, grace and timelock requirements.')
+      const state = await read<number>(market.governor, 'DefifaGovernor', 'stateOf', [id, cardId]).catch(() => null)
+      if (market.phase !== 3 || state !== 3) throw new Error('The result has not been queued through its timelock.')
       break
     }
     case 'fulfill': if (market.phase !== 4 || market.commitmentsFulfilled) throw new Error('There are no pending ratified game commitments.'); break
     case 'no-contest': if (market.phase !== 5 || market.noContestTriggered) throw new Error('Native no-contest refunds are not awaiting activation.'); break
     case 'cash-out': {
-      const quote = await quoteAt(client, market, tokenIdsFor(market, action.tokenIds), account)
+      const quote = await quoteAt(client, market, positionsFor(market, action.positions), account)
       if (BigInt(quote.reclaimWei) < uint(action.minReclaimedWei, 'minimum reclaim amount')) throw new Error('The cash-out amount fell below the reviewed minimum. Refresh its quote.')
       break
     }
@@ -462,15 +480,16 @@ export async function verifyLifecycleReceipt(request: LifecycleRequest, receipt:
   let action: LifecycleAction
   switch (decoded.functionName) {
     case 'safeTransferFrom':
-      if (args.length !== 3 || !sameAddress(args[0], account)) throw new Error('The recorded position transfer is not supported.')
-      action = { kind: 'transfer', to: args[1] as Address, tokenId: String(args[2]) }; break
+      if (args.length !== 5 || !sameAddress(args[0], account) || (args[3] as bigint) > BigInt(MAX_POSITIONS)) throw new Error('The recorded position transfer is not supported.')
+      action = { kind: 'transfer', to: args[1] as Address, tierId: Number(args[2]), count: Number(args[3]) }; break
     case 'setTierDelegatesTo': {
       const delegations = args[0] as { delegatee: Address; tierId: bigint }[]
       if (!delegations.length || delegations.some(item => !sameAddress(item.delegatee, delegations[0].delegatee))) throw new Error('The recorded delegation is not supported.')
       action = { kind: 'delegate', tierIds: delegations.map(item => Number(item.tierId)), delegatee: delegations[0].delegatee }; break
     }
-    case 'submitScorecardFor': case 'ratifyScorecardFrom':
-      action = { kind: decoded.functionName === 'submitScorecardFor' ? 'submit-scorecard' : 'ratify', weights: (args[1] as NativeWeight[]).map(item => ({ tierId: Number(item.id), weight: item.cashOutWeight.toString() })) }; break
+    case 'submitScorecardFor': case 'forwardScorecardFor': case 'ratifyScorecardFrom':
+      action = { kind: ({ submitScorecardFor: 'submit-scorecard', forwardScorecardFor: 'forward', ratifyScorecardFrom: 'ratify' } as const)[decoded.functionName],
+        weights: (args[1] as NativeWeight[]).map(item => ({ tierId: Number(item.id), weight: item.cashOutWeight.toString() })) }; break
     case 'attestToScorecardFrom': case 'revokeAttestationFrom':
       action = { kind: decoded.functionName === 'attestToScorecardFrom' ? 'attest' : 'revoke', scorecardId: String(args[1]) }; break
     case 'fulfillCommitmentsOf': action = { kind: 'fulfill' }; break
@@ -481,8 +500,9 @@ export async function verifyLifecycleReceipt(request: LifecycleRequest, receipt:
       }
       const metadata = args[6] as Hex
       if (metadata.length > 14_000) throw new Error('The recorded cash-out metadata exceeds the selection limit.')
-      const [ids] = decodeAbiParameters([{ type: 'uint256[]' }], `0x${metadata.slice(130)}`)
-      action = { kind: 'cash-out', tokenIds: ids.map(String), minReclaimedWei: String(args[4]) }; break
+      const [ids, amounts] = decodeAbiParameters([{ type: 'uint256[]' }, { type: 'uint256[]' }], `0x${metadata.slice(130)}`)
+      if (ids.length !== amounts.length || amounts.some(amount => amount > BigInt(MAX_POSITIONS))) throw new Error('The recorded cash-out selection is not supported.')
+      action = { kind: 'cash-out', positions: ids.map((tierId, index) => ({ tierId: Number(tierId), count: Number(amounts[index]) })), minReclaimedWei: String(args[4]) }; break
     }
     default: throw new Error('This is not a supported Defifa lifecycle action.')
   }
@@ -490,8 +510,8 @@ export async function verifyLifecycleReceipt(request: LifecycleRequest, receipt:
   if (!sameAddress(expected.to, request.to) || expected.data !== request.data) throw new Error('The recorded lifecycle calldata does not match the supported action.')
   switch (action.kind) {
     case 'transfer': {
-      const transfers = receiptEvents<TransferArgs>(receipt, 'DefifaHook', market.hook, 'Transfer')
-      if (!transfers.some(item => item.tokenId === BigInt(action.tokenId) && sameAddress(item.from, account) && sameAddress(item.to, action.to))) {
+      if (!receiptMoves(market.hook, receipt).some(move => move.id === BigInt(action.tierId) && move.value === BigInt(action.count)
+        && sameAddress(move.from, account) && sameAddress(move.to, action.to))) {
         throw new Error('The receipt does not confirm the reviewed position transfer.')
       }
       break
@@ -507,16 +527,27 @@ export async function verifyLifecycleReceipt(request: LifecycleRequest, receipt:
     }
     case 'submit-scorecard': {
       const weights = nativeWeights(market, action.weights)
-      const cardId = await read<bigint>(market.governor, 'DefifaGovernor', 'scorecardIdOf', [market.hook, weights])
-      const events = receiptEvents<SubmittedArgs>(receipt, 'DefifaGovernor', d.governor, 'ScorecardSubmitted')
+      const cardId = await read<bigint>(market.referee, 'DefifaVotingReferee', 'scorecardIdOf', [market.hook, weights])
+      const events = receiptEvents<SubmittedArgs>(receipt, 'DefifaVotingReferee', d.referee, 'ScorecardSubmitted')
       if (!events.some(item => item.gameId === id && item.scorecardId === cardId && sameAddress(item.caller, account) && exactWeights(item.tierWeights, weights))) {
         throw new Error('The receipt does not confirm the complete reviewed result.')
       }
-      await read<number>(market.governor, 'DefifaGovernor', 'stateOf', [id, cardId]); break
+      await read<number>(market.referee, 'DefifaVotingReferee', 'stateOf', [id, cardId]); break
+    }
+    case 'forward': {
+      const weights = nativeWeights(market, action.weights)
+      const cardId = await read<bigint>(market.referee, 'DefifaVotingReferee', 'scorecardIdOf', [market.hook, weights])
+      const forwarded = receiptEvents<{ gameId: bigint; scorecardId: bigint; caller: Address }>(receipt, 'DefifaVotingReferee', d.referee, 'ScorecardForwarded')
+      const queued = receiptEvents<SubmittedArgs>(receipt, 'DefifaGovernor', d.governor, 'ScorecardSubmitted')
+      if (!forwarded.some(item => item.gameId === id && item.scorecardId === cardId && sameAddress(item.caller, account))
+        || !queued.some(item => item.gameId === id && item.scorecardId === cardId && exactWeights(item.tierWeights, weights))) {
+        throw new Error('The receipt does not confirm the result was queued with the governor.')
+      }
+      break
     }
     case 'attest': case 'revoke': {
       type Attestation = { gameId: bigint; scorecardId: bigint; caller: Address; account?: Address; weight: bigint }
-      const events = receiptEvents<Attestation>(receipt, 'DefifaGovernor', d.governor, action.kind === 'attest' ? 'ScorecardAttested' : 'AttestationRevoked')
+      const events = receiptEvents<Attestation>(receipt, 'DefifaVotingReferee', d.referee, action.kind === 'attest' ? 'ScorecardAttested' : 'AttestationRevoked')
       if (!events.some(item => item.gameId === id && item.scorecardId === BigInt(action.scorecardId) && sameAddress(item.caller, account) && item.weight > 0n
         && (action.kind === 'attest' || sameAddress(item.account, account)))) throw new Error('The receipt does not confirm the reviewed attestation change.')
       // Another same-block transaction can revoke/restore this attestation. Its authenticated
@@ -546,14 +577,14 @@ export async function verifyLifecycleReceipt(request: LifecycleRequest, receipt:
       break
     }
     case 'cash-out': {
-      const ids = tokenIdsFor(market, action.tokenIds)
-      const burns = receiptEvents<TransferArgs>(receipt, 'DefifaHook', market.hook, 'Transfer')
-        .filter(item => sameAddress(item.from, account) && sameAddress(item.to, zeroAddress)).map(item => item.tokenId).sort((a, b) => a < b ? -1 : a > b ? 1 : 0)
+      const positions = positionsFor(market, action.positions)
+      const burns = quantitiesOf(market, receiptMoves(market.hook, receipt).filter(move => sameAddress(move.from, account) && sameAddress(move.to, zeroAddress)))
+      const expected = market.ranges.map(range => positions.find(position => position.tierId === range.tierId)?.count ?? 0)
       type CashOutEvent = { projectId: bigint; holder: Address; beneficiary: Address; reclaimAmount: bigint; cashOutCount: bigint; metadata: Hex; caller: Address }
       const events = receiptEvents<CashOutEvent>(receipt, 'JBMultiTerminal', d.terminal, 'CashOutTokens')
-      if (burns.length !== ids.length || burns.some((tokenId, index) => tokenId !== ids[index]) || !events.some(item => item.projectId === id
+      if (JSON.stringify(burns) !== JSON.stringify(expected) || !events.some(item => item.projectId === id
         && sameAddress(item.holder, account) && sameAddress(item.beneficiary, account) && sameAddress(item.caller, account) && item.cashOutCount === 0n
-        && item.reclaimAmount >= BigInt(action.minReclaimedWei) && item.metadata === cashOutMetadata(market.chainId, ids))) {
+        && item.reclaimAmount >= BigInt(action.minReclaimedWei) && item.metadata === cashOutMetadata(market.chainId, positions))) {
         throw new Error('The receipt does not confirm every position burn and the reviewed reclaim amount.')
       }
       if (market.phase === 4) {
@@ -576,10 +607,11 @@ export async function verifyLifecycleReceipt(request: LifecycleRequest, receipt:
   }
 }
 
-/** The 721 store's uncapped tier supply, as DefifaDeployer creates every range. */
-const INITIAL_TIER_SUPPLY = 999_999_999n
-/** Bounds one voters read: owner, delegate and weight reads for at most this many positions. */
-const MAX_VOTER_POSITIONS = 2_000
+/** Bounds one voters read: delegate and weight reads for at most this many (holder, range) pairs. */
+const MAX_VOTER_HOLDINGS = 2_000
+const HOLDINGS_QUERY = `query Holdings($chainId: Int!, $projectId: Int!, $after: String) {
+  defifaHoldings(where: { chainId: $chainId, projectId: $projectId, count_gt: 0 }, limit: 1000, after: $after) {
+    items { hook owner tierId count } pageInfo { hasNextPage endCursor } } }`
 
 export type ResultVoters = {
   /** Delegates holding attestation weight on this result, largest first. */
@@ -588,39 +620,37 @@ export type ResultVoters = {
   undelegated: number
 }
 
+type Holding = { hook: string; owner: string; tierId: number; count: number }
+
 /**
- * Who can attest a result and how much each can add: every position's owner, that owner's
- * delegate for the range, and the delegate's weight at the result's snapshot (submission - 1).
+ * Who can attest a result and how much each can add. Bendystraw lists the holders (ERC-1155 has no
+ * on-chain enumeration); each holder's range delegate and each delegate's weight at the result's
+ * snapshot (submission - 1) are read on chain.
  */
 export async function readResultVoters(client: PublicClient, market: MarketSnapshot, scorecardId: bigint, submittedAt: number): Promise<ResultVoters> {
   const read = readAt(client, market)
   const id = projectNumber(market.projectId)
-  const tokens = market.tiers.flatMap(tier => Array.from({ length: Number(INITIAL_TIER_SUPPLY - BigInt(tier.remainingSupply)) },
-    (_, serial) => ({ tierId: tier.tierId, tokenId: BigInt(tier.tierId) * TOKEN_MULTIPLIER + BigInt(serial + 1) })))
-  if (tokens.length > MAX_VOTER_POSITIONS) throw new Error(`Voters are listed for games up to ${MAX_VOTER_POSITIONS} positions.`)
-  // Burned positions have no owner; the client batches these reads into multicalls.
-  const owners = await Promise.all(tokens.map(token => read<Address>(market.hook, 'DefifaHook', 'ownerOf', [token.tokenId]).catch(() => null)))
-  const pairs = new Map<string, { owner: Address; tierId: number; positions: number }>()
-  owners.forEach((owner, index) => {
-    if (!owner) return
-    const key = `${owner.toLowerCase()}:${tokens[index].tierId}`
-    const pair = pairs.get(key) ?? { owner, tierId: tokens[index].tierId, positions: 0 }
-    pair.positions++
-    pairs.set(key, pair)
-  })
-  const delegated = await Promise.all([...pairs.values()].map(async pair => ({ ...pair,
-    delegate: await read<Address>(market.hook, 'DefifaHook', 'getTierDelegateOf', [pair.owner, BigInt(pair.tierId)]) })))
+  const holdings: Holding[] = []
+  for (let after: string | null = null, page = 0; page === 0 || after; page++) {
+    if (page * 1000 >= MAX_VOTER_HOLDINGS) throw new Error(`Voters are listed for games up to ${MAX_VOTER_HOLDINGS} holdings.`)
+    const data: { defifaHoldings: { items: Holding[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } } = await bendystraw(
+      market.chainId, HOLDINGS_QUERY, { chainId: market.chainId, projectId: Number(id), after })
+    holdings.push(...data.defifaHoldings.items.filter(item => sameAddress(item.hook, market.hook)))
+    after = data.defifaHoldings.pageInfo.hasNextPage ? data.defifaHoldings.pageInfo.endCursor : null
+  }
+  const delegated = await Promise.all(holdings.map(async holding => ({ ...holding,
+    delegate: await read<Address>(market.hook, 'DefifaHook', 'getTierDelegateOf', [getAddress(holding.owner), BigInt(holding.tierId)]) })))
   const delegates = [...new Set(delegated.filter(pair => !sameAddress(pair.delegate, zeroAddress)).map(pair => pair.delegate.toLowerCase()))] as Address[]
   const voters = await Promise.all(delegates.map(async account => {
     const [weight, attested] = await Promise.all([
-      read<bigint>(market.governor, 'DefifaGovernor', 'getBWAAttestationWeight', [id, scorecardId, account, submittedAt - 1]),
-      read<boolean>(market.governor, 'DefifaGovernor', 'hasAttestedTo', [id, scorecardId, account]),
+      read<bigint>(market.referee, 'DefifaVotingReferee', 'getBWAAttestationWeight', [id, scorecardId, account, submittedAt - 1]),
+      read<boolean>(market.referee, 'DefifaVotingReferee', 'hasAttestedTo', [id, scorecardId, account]),
     ])
     return { account, weight, attested }
   }))
   return {
     voters: voters.filter(voter => voter.weight > 0n).sort((a, b) => a.weight === b.weight ? 0 : a.weight > b.weight ? -1 : 1)
       .map(voter => ({ account: voter.account, weight: voter.weight.toString(), attested: voter.attested })),
-    undelegated: delegated.filter(pair => sameAddress(pair.delegate, zeroAddress)).reduce((sum, pair) => sum + pair.positions, 0),
+    undelegated: delegated.filter(pair => sameAddress(pair.delegate, zeroAddress)).reduce((sum, pair) => sum + pair.count, 0),
   }
 }

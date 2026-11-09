@@ -8,21 +8,21 @@ export async function GET(request: Request, { params }: { params: Promise<{ chai
   const { chainId, projectId } = await params
   const query = new URL(request.url).searchParams
   const account = query.get('account') || undefined
-  const options: { blockNumber?: string; tokenCursor?: string; scorecardCursor?: string } = {}
+  const options: { blockNumber?: string; scorecardCursor?: string } = {}
   const headers = { 'Cache-Control': 'private, no-store' }
   try {
     if (!/^\d{1,10}$/.test(chainId)) throw new Error('This network is not supported.')
     chainForId(Number(chainId))
     projectNumber(projectId)
     if (account && !isAddress(account)) throw new Error('Enter a valid wallet address.')
-    for (const key of ['blockNumber', 'tokenCursor', 'scorecardCursor'] as const) {
+    for (const key of ['blockNumber', 'scorecardCursor'] as const) {
       const value = query.get(key)
       if (value !== null) {
         if (!/^\d{1,78}$/.test(value) || BigInt(value) >= 2n ** 256n) throw new Error('The page cursor is invalid.')
         options[key] = value
       }
     }
-    if ((options.tokenCursor || options.scorecardCursor) && !options.blockNumber) {
+    if (options.scorecardCursor && !options.blockNumber) {
       throw new Error('Pagination requires the original block number.')
     }
   } catch (cause) {

@@ -109,7 +109,7 @@ export async function injectForkWallet(page: Page, fork: LocalFork) {
               args: [launchData(published.definition, fork.chainId, published)] })
             return fork.client.estimateGas({ account: fork.accounts[0], to: deployment.deployer, data, value })
           })(),
-          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('The private fork gas warm-up exceeded 40 seconds.')), 40_000) }),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('The private fork gas warm-up exceeded 120 seconds.')), 120_000) }),
         ]).finally(() => { if (timer) clearTimeout(timer) })
         metadataPins.push({ cid: metadataCid(result.uri), bodySha256: createHash('sha256').update(body).digest('hex'),
           status: response.status(), warmupGas: String(gas), warmupMs: Date.now() - started })

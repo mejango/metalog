@@ -24,7 +24,6 @@ export function EntryDetail({ entry, market, explorer }: { entry: EntryHistoryEn
     </div>
     <details><summary>Raw record</summary>
       {entry.coefficients && <p className="entry-coefficients">a-coefficients: <code>{JSON.stringify(entry.coefficients)}</code></p>}
-      <p className="entry-coefficients">Token IDs: {entry.tokenIds.join(', ')}</p>
     </details>
   </div>
 }

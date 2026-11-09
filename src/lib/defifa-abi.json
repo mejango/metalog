@@ -217,6 +217,19 @@
     },
     {
       "type": "function",
+      "name": "fulfillCommitmentsOf",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
       "name": "launchGameWith",
       "inputs": [
         {
@@ -356,16 +369,6 @@
               ]
             },
             {
-              "name": "attestationStartTime",
-              "type": "uint256",
-              "internalType": "uint256"
-            },
-            {
-              "name": "attestationGracePeriod",
-              "type": "uint256",
-              "internalType": "uint256"
-            },
-            {
               "name": "defaultAttestationDelegate",
               "type": "address",
               "internalType": "address"
@@ -394,6 +397,16 @@
               "name": "timelockDuration",
               "type": "uint256",
               "internalType": "uint256"
+            },
+            {
+              "name": "referee",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "refereeData",
+              "type": "bytes",
+              "internalType": "bytes"
             }
           ]
         }
@@ -500,69 +513,6 @@
     },
     {
       "type": "function",
-      "name": "trustedForwarder",
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "",
-          "type": "address",
-          "internalType": "address"
-        }
-      ],
-      "stateMutability": "view"
-    },
-    {
-      "type": "event",
-      "name": "LaunchGame",
-      "inputs": [
-        {
-          "name": "gameId",
-          "type": "uint256",
-          "indexed": true,
-          "internalType": "uint256"
-        },
-        {
-          "name": "hook",
-          "type": "address",
-          "indexed": true,
-          "internalType": "contract IDefifaHook"
-        },
-        {
-          "name": "governor",
-          "type": "address",
-          "indexed": true,
-          "internalType": "contract IDefifaGovernor"
-        },
-        {
-          "name": "tokenUriResolver",
-          "type": "address",
-          "indexed": false,
-          "internalType": "contract IJB721TokenUriResolver"
-        },
-        {
-          "name": "caller",
-          "type": "address",
-          "indexed": false,
-          "internalType": "address"
-        }
-      ],
-      "anonymous": false
-    },
-    {
-      "type": "function",
-      "name": "fulfillCommitmentsOf",
-      "inputs": [
-        {
-          "name": "gameId",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "outputs": [],
-      "stateMutability": "nonpayable"
-    },
-    {
-      "type": "function",
       "name": "triggerNoContestFor",
       "inputs": [
         {
@@ -573,6 +523,19 @@
       ],
       "outputs": [],
       "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "trustedForwarder",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "view"
     },
     {
       "type": "event",
@@ -632,6 +595,43 @@
     },
     {
       "type": "event",
+      "name": "LaunchGame",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "hook",
+          "type": "address",
+          "indexed": true,
+          "internalType": "contract IDefifaHook"
+        },
+        {
+          "name": "governor",
+          "type": "address",
+          "indexed": true,
+          "internalType": "contract IDefifaGovernor"
+        },
+        {
+          "name": "tokenUriResolver",
+          "type": "address",
+          "indexed": false,
+          "internalType": "contract IJB721TokenUriResolver"
+        },
+        {
+          "name": "caller",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
       "name": "QueuedNoContest",
       "inputs": [
         {
@@ -666,29 +666,10 @@
     },
     {
       "type": "function",
-      "name": "attestationGracePeriodOf",
+      "name": "pendingScorecardIdOf",
       "inputs": [
-        {
-          "name": "gameId",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "outputs": [
         {
           "name": "",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "stateMutability": "view"
-    },
-    {
-      "type": "function",
-      "name": "attestationStartTimeOf",
-      "inputs": [
-        {
-          "name": "gameId",
           "type": "uint256",
           "internalType": "uint256"
         }
@@ -717,136 +698,6 @@
           "name": "",
           "type": "uint256",
           "internalType": "uint256"
-        }
-      ],
-      "stateMutability": "view"
-    },
-    {
-      "type": "function",
-      "name": "timelockDurationOf",
-      "inputs": [
-        {
-          "name": "gameId",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "outputs": [
-        {
-          "name": "",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "stateMutability": "view"
-    },
-    {
-      "type": "function",
-      "name": "attestToScorecardFrom",
-      "inputs": [
-        {
-          "name": "gameId",
-          "type": "uint256",
-          "internalType": "uint256"
-        },
-        {
-          "name": "scorecardId",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "outputs": [
-        {
-          "name": "weight",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "stateMutability": "nonpayable"
-    },
-    {
-      "type": "function",
-      "name": "attestationCountOf",
-      "inputs": [
-        {
-          "name": "gameId",
-          "type": "uint256",
-          "internalType": "uint256"
-        },
-        {
-          "name": "scorecardId",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "outputs": [
-        {
-          "name": "",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "stateMutability": "view"
-    },
-    {
-      "type": "function",
-      "name": "getBWAAttestationWeight",
-      "inputs": [
-        {
-          "name": "gameId",
-          "type": "uint256",
-          "internalType": "uint256"
-        },
-        {
-          "name": "scorecardId",
-          "type": "uint256",
-          "internalType": "uint256"
-        },
-        {
-          "name": "account",
-          "type": "address",
-          "internalType": "address"
-        },
-        {
-          "name": "timestamp",
-          "type": "uint48",
-          "internalType": "uint48"
-        }
-      ],
-      "outputs": [
-        {
-          "name": "bwaAttestationPower",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "stateMutability": "view"
-    },
-    {
-      "type": "function",
-      "name": "hasAttestedTo",
-      "inputs": [
-        {
-          "name": "gameId",
-          "type": "uint256",
-          "internalType": "uint256"
-        },
-        {
-          "name": "scorecardId",
-          "type": "uint256",
-          "internalType": "uint256"
-        },
-        {
-          "name": "account",
-          "type": "address",
-          "internalType": "address"
-        }
-      ],
-      "outputs": [
-        {
-          "name": "",
-          "type": "bool",
-          "internalType": "bool"
         }
       ],
       "stateMutability": "view"
@@ -889,21 +740,22 @@
     },
     {
       "type": "function",
-      "name": "revokeAttestationFrom",
+      "name": "refereeOf",
       "inputs": [
         {
-          "name": "gameId",
-          "type": "uint256",
-          "internalType": "uint256"
-        },
-        {
-          "name": "scorecardId",
+          "name": "",
           "type": "uint256",
           "internalType": "uint256"
         }
       ],
-      "outputs": [],
-      "stateMutability": "nonpayable"
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "view"
     },
     {
       "type": "function",
@@ -934,12 +786,36 @@
       ],
       "outputs": [
         {
-          "name": "",
+          "name": "scorecardId",
           "type": "uint256",
           "internalType": "uint256"
         }
       ],
       "stateMutability": "pure"
+    },
+    {
+      "type": "function",
+      "name": "scorecardSubmittedAtOf",
+      "inputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
     },
     {
       "type": "function",
@@ -958,7 +834,7 @@
       ],
       "outputs": [
         {
-          "name": "",
+          "name": "state",
           "type": "uint8",
           "internalType": "enum DefifaScorecardState"
         }
@@ -967,107 +843,22 @@
     },
     {
       "type": "function",
-      "name": "submitScorecardFor",
+      "name": "timelockDurationOf",
       "inputs": [
         {
-          "name": "gameId",
+          "name": "",
           "type": "uint256",
           "internalType": "uint256"
-        },
-        {
-          "name": "tierWeights",
-          "type": "tuple[]",
-          "internalType": "struct DefifaTierCashOutWeight[]",
-          "components": [
-            {
-              "name": "id",
-              "type": "uint256",
-              "internalType": "uint256"
-            },
-            {
-              "name": "cashOutWeight",
-              "type": "uint256",
-              "internalType": "uint256"
-            }
-          ]
         }
       ],
       "outputs": [
         {
-          "name": "scorecardId",
+          "name": "",
           "type": "uint256",
           "internalType": "uint256"
         }
       ],
-      "stateMutability": "nonpayable"
-    },
-    {
-      "type": "event",
-      "name": "AttestationRevoked",
-      "inputs": [
-        {
-          "name": "gameId",
-          "type": "uint256",
-          "indexed": true,
-          "internalType": "uint256"
-        },
-        {
-          "name": "scorecardId",
-          "type": "uint256",
-          "indexed": true,
-          "internalType": "uint256"
-        },
-        {
-          "name": "account",
-          "type": "address",
-          "indexed": false,
-          "internalType": "address"
-        },
-        {
-          "name": "weight",
-          "type": "uint256",
-          "indexed": false,
-          "internalType": "uint256"
-        },
-        {
-          "name": "caller",
-          "type": "address",
-          "indexed": false,
-          "internalType": "address"
-        }
-      ],
-      "anonymous": false
-    },
-    {
-      "type": "event",
-      "name": "ScorecardAttested",
-      "inputs": [
-        {
-          "name": "gameId",
-          "type": "uint256",
-          "indexed": true,
-          "internalType": "uint256"
-        },
-        {
-          "name": "scorecardId",
-          "type": "uint256",
-          "indexed": true,
-          "internalType": "uint256"
-        },
-        {
-          "name": "weight",
-          "type": "uint256",
-          "indexed": false,
-          "internalType": "uint256"
-        },
-        {
-          "name": "caller",
-          "type": "address",
-          "indexed": false,
-          "internalType": "address"
-        }
-      ],
-      "anonymous": false
+      "stateMutability": "view"
     },
     {
       "type": "event",
@@ -1129,12 +920,6 @@
           ]
         },
         {
-          "name": "isDefaultAttestationDelegate",
-          "type": "bool",
-          "indexed": false,
-          "internalType": "bool"
-        },
-        {
           "name": "caller",
           "type": "address",
           "indexed": false,
@@ -1142,25 +927,6 @@
         }
       ],
       "anonymous": false
-    },
-    {
-      "type": "function",
-      "name": "quorum",
-      "inputs": [
-        {
-          "name": "gameId",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "outputs": [
-        {
-          "name": "",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "stateMutability": "view"
     }
   ],
   "DefifaHook": [
@@ -1231,6 +997,80 @@
     },
     {
       "type": "function",
+      "name": "balanceOf",
+      "inputs": [
+        {
+          "name": "account",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "id",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "balanceOfBatch",
+      "inputs": [
+        {
+          "name": "accounts",
+          "type": "address[]",
+          "internalType": "address[]"
+        },
+        {
+          "name": "ids",
+          "type": "uint256[]",
+          "internalType": "uint256[]"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256[]",
+          "internalType": "uint256[]"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "baseURI",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "string",
+          "internalType": "string"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "contractURI",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "string",
+          "internalType": "string"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
       "name": "currentSupplyOfTier",
       "inputs": [
         {
@@ -1276,6 +1116,30 @@
     },
     {
       "type": "function",
+      "name": "getTierDelegateOf",
+      "inputs": [
+        {
+          "name": "account",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "tier",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
       "name": "owner",
       "inputs": [],
       "outputs": [
@@ -1302,157 +1166,6 @@
     },
     {
       "type": "function",
-      "name": "store",
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "",
-          "type": "address",
-          "internalType": "contract IJB721TiersHookStore"
-        }
-      ],
-      "stateMutability": "view"
-    },
-    {
-      "type": "function",
-      "name": "tierNameOf",
-      "inputs": [
-        {
-          "name": "tierId",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "outputs": [
-        {
-          "name": "",
-          "type": "string",
-          "internalType": "string"
-        }
-      ],
-      "stateMutability": "view"
-    },
-    {
-      "type": "function",
-      "name": "tokensRedeemedFrom",
-      "inputs": [
-        {
-          "name": "",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "outputs": [
-        {
-          "name": "",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "stateMutability": "view"
-    },
-    {
-      "type": "event",
-      "name": "Transfer",
-      "inputs": [
-        {
-          "name": "from",
-          "type": "address",
-          "indexed": true,
-          "internalType": "address"
-        },
-        {
-          "name": "to",
-          "type": "address",
-          "indexed": true,
-          "internalType": "address"
-        },
-        {
-          "name": "tokenId",
-          "type": "uint256",
-          "indexed": true,
-          "internalType": "uint256"
-        }
-      ],
-      "anonymous": false
-    },
-    {
-      "type": "function",
-      "name": "tierCashOutWeights",
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "",
-          "type": "uint256[128]",
-          "internalType": "uint256[128]"
-        }
-      ],
-      "stateMutability": "view"
-    },
-    {
-      "type": "function",
-      "name": "balanceOf",
-      "inputs": [
-        {
-          "name": "owner",
-          "type": "address",
-          "internalType": "address"
-        }
-      ],
-      "outputs": [
-        {
-          "name": "",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "stateMutability": "view"
-    },
-    {
-      "type": "function",
-      "name": "getTierDelegateOf",
-      "inputs": [
-        {
-          "name": "account",
-          "type": "address",
-          "internalType": "address"
-        },
-        {
-          "name": "tier",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "outputs": [
-        {
-          "name": "",
-          "type": "address",
-          "internalType": "address"
-        }
-      ],
-      "stateMutability": "view"
-    },
-    {
-      "type": "function",
-      "name": "ownerOf",
-      "inputs": [
-        {
-          "name": "tokenId",
-          "type": "uint256",
-          "internalType": "uint256"
-        }
-      ],
-      "outputs": [
-        {
-          "name": "",
-          "type": "address",
-          "internalType": "address"
-        }
-      ],
-      "stateMutability": "view"
-    },
-    {
-      "type": "function",
       "name": "safeTransferFrom",
       "inputs": [
         {
@@ -1466,30 +1179,12 @@
           "internalType": "address"
         },
         {
-          "name": "tokenId",
+          "name": "id",
           "type": "uint256",
           "internalType": "uint256"
-        }
-      ],
-      "outputs": [],
-      "stateMutability": "nonpayable"
-    },
-    {
-      "type": "function",
-      "name": "safeTransferFrom",
-      "inputs": [
-        {
-          "name": "from",
-          "type": "address",
-          "internalType": "address"
         },
         {
-          "name": "to",
-          "type": "address",
-          "internalType": "address"
-        },
-        {
-          "name": "tokenId",
+          "name": "value",
           "type": "uint256",
           "internalType": "uint256"
         },
@@ -1529,10 +1224,60 @@
     },
     {
       "type": "function",
+      "name": "store",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "contract IJB721TiersHookStore"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "tierCashOutWeights",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256[128]",
+          "internalType": "uint256[128]"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "tierNameOf",
+      "inputs": [
+        {
+          "name": "tierId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "string",
+          "internalType": "string"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
       "name": "tokensClaimableFor",
       "inputs": [
         {
           "name": "tokenIds",
+          "type": "uint256[]",
+          "internalType": "uint256[]"
+        },
+        {
+          "name": "amounts",
           "type": "uint256[]",
           "internalType": "uint256[]"
         }
@@ -1545,6 +1290,25 @@
         },
         {
           "name": "baseProtocolTokenAmount",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "tokensRedeemedFrom",
+      "inputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
           "type": "uint256",
           "internalType": "uint256"
         }
@@ -1615,6 +1379,43 @@
     },
     {
       "type": "event",
+      "name": "Mint",
+      "inputs": [
+        {
+          "name": "tierId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "beneficiary",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "count",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "totalAmountContributed",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "caller",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
       "name": "TierCashOutWeightsSet",
       "inputs": [
         {
@@ -1645,15 +1446,78 @@
       "anonymous": false
     },
     {
-      "type": "error",
-      "name": "ERC721NonexistentToken",
+      "type": "event",
+      "name": "TransferBatch",
       "inputs": [
         {
-          "name": "tokenId",
+          "name": "operator",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "from",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "to",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "ids",
+          "type": "uint256[]",
+          "indexed": false,
+          "internalType": "uint256[]"
+        },
+        {
+          "name": "values",
+          "type": "uint256[]",
+          "indexed": false,
+          "internalType": "uint256[]"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "TransferSingle",
+      "inputs": [
+        {
+          "name": "operator",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "from",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "to",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "id",
           "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "value",
+          "type": "uint256",
+          "indexed": false,
           "internalType": "uint256"
         }
-      ]
+      ],
+      "anonymous": false
     }
   ],
   "JBController": [
@@ -2473,6 +2337,499 @@
         }
       ],
       "stateMutability": "view"
+    }
+  ],
+  "DefifaVotingReferee": [
+    {
+      "type": "function",
+      "name": "CONTROLLER",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "contract IJBController"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "attestToScorecardFrom",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "scorecardId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "weight",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "attestationCountOf",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "scorecardId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "count",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "attestationGracePeriodOf",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "gracePeriod",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "attestationStartTimeOf",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "startTime",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "forwardScorecardFor",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "tierWeights",
+          "type": "tuple[]",
+          "internalType": "struct DefifaTierCashOutWeight[]",
+          "components": [
+            {
+              "name": "id",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "cashOutWeight",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "scorecardId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "forwardedScorecardIdOf",
+      "inputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "getBWAAttestationWeight",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "scorecardId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "account",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "timestamp",
+          "type": "uint48",
+          "internalType": "uint48"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "bwaAttestationPower",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "hasAttestedTo",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "scorecardId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "account",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "attested",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "quorumOf",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "scorecardId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "quorumWeight",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "revokeAttestationFrom",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "scorecardId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "scorecardIdOf",
+      "inputs": [
+        {
+          "name": "gameHook",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "tierWeights",
+          "type": "tuple[]",
+          "internalType": "struct DefifaTierCashOutWeight[]",
+          "components": [
+            {
+              "name": "id",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "cashOutWeight",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "scorecardId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "pure"
+    },
+    {
+      "type": "function",
+      "name": "stateOf",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "scorecardId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "state",
+          "type": "uint8",
+          "internalType": "enum DefifaScorecardState"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "submitScorecardFor",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "tierWeights",
+          "type": "tuple[]",
+          "internalType": "struct DefifaTierCashOutWeight[]",
+          "components": [
+            {
+              "name": "id",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "cashOutWeight",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "scorecardId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "event",
+      "name": "AttestationRevoked",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "scorecardId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "account",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        },
+        {
+          "name": "weight",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "caller",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "ScorecardAttested",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "scorecardId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "weight",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "caller",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "ScorecardForwarded",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "scorecardId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "caller",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "ScorecardSubmitted",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "scorecardId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "tierWeights",
+          "type": "tuple[]",
+          "indexed": false,
+          "internalType": "struct DefifaTierCashOutWeight[]",
+          "components": [
+            {
+              "name": "id",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "cashOutWeight",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ]
+        },
+        {
+          "name": "caller",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
     }
   ]
 }

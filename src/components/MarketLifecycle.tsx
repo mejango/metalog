@@ -14,7 +14,7 @@ import { RangeStrip } from './RangeStrip'
 import { useLiveOutcome } from '@/lib/live-outcome'
 import { binForOutcome, formatPercentage } from '@/domain/ranges'
 
-export function MarketLifecycle({ lifecycle, panel, current, loading, error, onRefresh, onPage, inventoryPaged, scorecardsPaged }: {
+export function MarketLifecycle({ lifecycle, panel, current, loading, error, onRefresh, onPage, scorecardsPaged }: {
   lifecycle: LifecycleSnapshot
   /** Both panels stay mounted so selections and result drafts survive switching. */
   panel: 'nfts' | 'results' | null
@@ -22,18 +22,19 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   loading: boolean
   error?: string
   onRefresh: () => void
-  onPage: (kind: 'inventory' | 'scorecards', cursor?: string) => void
-  inventoryPaged: boolean
+  onPage: (cursor?: string) => void
   scorecardsPaged: boolean
 }) {
   const { address, isSigna, connect } = useWallet()
   const transactions = useTransactions()
-  const { market, inventory } = lifecycle
-  const [selections, setSelections] = useState<Record<string, Record<string, number>>>({})
+  const { market, positions } = lifecycle
+  // Positions to burn per range, per wallet.
+  const [selections, setSelections] = useState<Record<string, Record<number, number>>>({})
   const [recipient, setRecipient] = useState('')
+  const [sendCount, setSendCount] = useState('')
   const [delegatee, setDelegatee] = useState('')
-  // One position's menu action open inline beneath its row.
-  const [rowAction, setRowAction] = useState<{ tokenId: string; kind: 'menu' | 'transfer' | 'delegate' } | null>(null)
+  // One range's menu action open inline beneath its row.
+  const [rowAction, setRowAction] = useState<{ tierId: number; kind: 'menu' | 'transfer' | 'delegate' } | null>(null)
   const [percentages, setPercentages] = useState(() => market.ranges.map(() => '0'))
   const [resultView, setResultView] = useState<'weighted' | 'one-range'>('weighted')
   const [scoreTouched, setScoreTouched] = useState(false)
@@ -44,7 +45,11 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   const [actionError, setActionError] = useState('')
   const walletKey = address?.toLowerCase() ?? ''
   const selected = selections[walletKey] ?? {}
-  const tokenIds = Object.keys(selected).sort((a, b) => BigInt(a) < BigInt(b) ? -1 : 1)
+  const burning = positions.flatMap(position => {
+    const count = Math.min(selected[position.tierId] ?? 0, position.count, MAX_POSITIONS)
+    return count > 0 ? [{ tierId: position.tierId, count }] : []
+  })
+  const burnCount = burning.reduce((sum, position) => sum + position.count, 0)
   const matchingWallet = !!address && lifecycle.account?.toLowerCase() === walletKey
   const busy = preparing || transactions.busy || transactions.hasPendingForMarket(market)
   const canAct = current && matchingWallet && !isSigna && !busy
@@ -54,37 +59,19 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
     catch (cause) { return { weights: null, error: cause instanceof Error ? cause.message : 'Check the proposed percentages.' } }
   }, [market.ranges, percentages])
   const quote = useQuery({
-    queryKey: ['cash-out-quote', market.chainId, market.projectId, market.blockNumber, walletKey, tokenIds.join(',')],
+    queryKey: ['cash-out-quote', market.chainId, market.projectId, market.blockNumber, walletKey, JSON.stringify(burning)],
     queryFn: async () => {
       const { readCashOutQuote } = await import('@/lib/defifa-lifecycle')
-      return readCashOutQuote(market, tokenIds, address!)
+      return readCashOutQuote(market, burning, address!)
     },
-    enabled: current && matchingWallet && !!lifecycle.cashOutMode && tokenIds.length > 0 && tokenIds.length <= MAX_POSITIONS,
+    enabled: current && matchingWallet && !!lifecycle.cashOutMode && burning.length > 0,
     retry: false, staleTime: 0,
   })
   const quoteReady = current && matchingWallet && !!quote.data && !quote.isFetching && !quote.error
   const cashOutLabel = lifecycle.cashOutMode === 'cash-out' ? 'Claim payout' : 'Refund'
 
-  function changeSelection(tokenId: string, tierId: number, checked: boolean) {
-    setSelections(previous => {
-      const next = { ...(previous[walletKey] ?? {}) }
-      if (checked && !next[tokenId] && Object.keys(next).length >= MAX_POSITIONS) return previous
-      if (checked) next[tokenId] = tierId
-      else delete next[tokenId]
-      return { ...previous, [walletKey]: next }
-    })
-  }
-  function selectShown() {
-    if (!current || !matchingWallet || busy) return
-    setSelections(previous => {
-      const next = { ...(previous[walletKey] ?? {}) }
-      let count = Object.keys(next).length
-      for (const token of inventory.tokens) {
-        if (count >= MAX_POSITIONS) break
-        if (!next[token.tokenId]) { next[token.tokenId] = token.tierId; count++ }
-      }
-      return { ...previous, [walletKey]: next }
-    })
+  function select(next: Record<number, number>) {
+    setSelections(previous => ({ ...previous, [walletKey]: next }))
   }
   async function act(action: LifecycleAction) {
     if (!canAct || !address) return
@@ -96,12 +83,7 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
       const receipt = await transactions.executeMarket(prepared, market)
       if (receipt) {
         setRowAction(null)
-        const removed = action.kind === 'transfer' ? [action.tokenId] : action.kind === 'cash-out' ? action.tokenIds : []
-        if (removed.length) setSelections(previous => {
-          const next = { ...(previous[walletKey] ?? {}) }
-          for (const tokenId of removed) delete next[tokenId]
-          return { ...previous, [walletKey]: next }
-        })
+        if (action.kind === 'transfer' || action.kind === 'cash-out') select({})
         onRefresh()
       }
     } catch (cause) { setActionError(cause instanceof Error ? cause.message : 'The transaction could not be prepared.') }
@@ -149,70 +131,69 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
       {!address ? <button type="button" onClick={() => connect()}>Connect to view your positions</button>
         : !matchingWallet ? <p role="status">{error ? 'Positions for this wallet are unavailable.' : 'Loading positions for this wallet…'}</p>
           : <>
-            <p className="hint">{inventory.totalOwned} owned | {inventory.tokens.length} shown | block {market.blockNumber}</p>
-            {!inventory.complete && <p className="hint">This is a partial inventory. Load more to check the remaining positions.</p>}
-            {inventory.tokens.length === 0 ? <p>{inventory.complete && inventory.totalOwned === '0' ? 'You do not own any positions in this game.' : 'No owned positions on this page.'}</p>
-              : <div className="table-wrap"><table className="inventory-table"><thead><tr><th>Select</th><th>Position</th><th>Range</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>
-                {inventory.tokens.map(token => <Fragment key={token.tokenId}><tr>
-                  <td><input type="checkbox" aria-label={`Select position #${token.tokenId}`} checked={!!selected[token.tokenId]}
-                    disabled={!current || busy || (!selected[token.tokenId] && tokenIds.length >= MAX_POSITIONS)} onChange={event => changeSelection(token.tokenId, token.tierId, event.target.checked)} /></td>
-                  <td>#{token.tokenId}</td><td>{market.ranges.find(range => range.tierId === token.tierId)?.label}</td>
-                  <td className="row-menu-cell"><button type="button" className="row-menu" aria-label={`Actions for position #${token.tokenId}`}
-                    aria-expanded={rowAction?.tokenId === token.tokenId}
-                    onClick={() => setRowAction(rowAction?.tokenId === token.tokenId ? null : { tokenId: token.tokenId, kind: 'menu' })}>⋯</button></td>
+            {positions.length === 0 ? <p>You do not hold any positions in this game.</p>
+              : <div className="table-wrap"><table className="inventory-table"><thead><tr><th>Range</th><th>Held</th>
+                {lifecycle.cashOutMode && <th>{cashOutLabel}</th>}<th><span className="sr-only">Actions</span></th></tr></thead><tbody>
+                {positions.map(position => { const label = market.ranges.find(range => range.tierId === position.tierId)!.label; return <Fragment key={position.tierId}><tr>
+                  <td>{label}</td><td>{position.count}</td>
+                  {lifecycle.cashOutMode && <td><input type="number" inputMode="numeric" min={0} max={Math.min(position.count, MAX_POSITIONS)} step={1}
+                    aria-label={`Positions to burn in ${label}`} value={selected[position.tierId] ?? 0} disabled={!current || busy}
+                    onChange={event => select({ ...selected, [position.tierId]: Math.max(0, Math.min(Math.floor(Number(event.target.value) || 0), position.count, MAX_POSITIONS)) })} /></td>}
+                  <td className="row-menu-cell"><button type="button" className="row-menu" aria-label={`Actions for ${label}`}
+                    aria-expanded={rowAction?.tierId === position.tierId}
+                    onClick={() => setRowAction(rowAction?.tierId === position.tierId ? null : { tierId: position.tierId, kind: 'menu' })}>⋯</button></td>
                 </tr>
-                {rowAction?.tokenId === token.tokenId && <tr className="row-action"><td colSpan={4}>
-                  {rowAction.kind === 'menu' ? <div role="menu" aria-label={`Actions for position #${token.tokenId}`} className="actions">
-                    <button type="button" role="menuitem" onClick={() => { setRowAction({ tokenId: token.tokenId, kind: 'transfer' }); setRecipient('') }}>Transfer</button>
-                    <button type="button" role="menuitem" onClick={() => setRowAction({ tokenId: token.tokenId, kind: 'delegate' })}>Delegate votes</button>
+                {rowAction?.tierId === position.tierId && <tr className="row-action"><td colSpan={lifecycle.cashOutMode ? 4 : 3}>
+                  {rowAction.kind === 'menu' ? <div role="menu" aria-label={`Actions for ${label}`} className="actions">
+                    <button type="button" role="menuitem" onClick={() => { setRowAction({ tierId: position.tierId, kind: 'transfer' }); setRecipient(''); setSendCount(String(position.count)) }}>Transfer</button>
+                    <button type="button" role="menuitem" onClick={() => setRowAction({ tierId: position.tierId, kind: 'delegate' })}>Delegate votes</button>
                   </div> : rowAction.kind === 'transfer' ? <>
-                    <p className="hint">Ownership and payout rights of position #{token.tokenId} move to the recipient.</p>
+                    <p className="hint">Ownership and payout rights of these positions move to the recipient.</p>
+                    <label className="field"><span>Positions to send</span><input type="number" inputMode="numeric" min={1} max={Math.min(position.count, MAX_POSITIONS)} step={1}
+                      value={sendCount} onChange={event => setSendCount(event.target.value)} /></label>
                     <label className="field"><span>Transfer recipient</span><input value={recipient} spellCheck={false} autoComplete="off" placeholder="0x…" onChange={event => setRecipient(event.target.value)} /></label>
                     <div className="actions">
-                      <button type="button" disabled={!canAct || !isAddress(recipient)}
-                        onClick={() => void act({ kind: 'transfer', tokenId: token.tokenId, to: getAddress(recipient) })}>Review transfer</button>
+                      <button type="button" disabled={!canAct || !isAddress(recipient) || !/^[1-9]\d*$/.test(sendCount) || Number(sendCount) > Math.min(position.count, MAX_POSITIONS)}
+                        onClick={() => void act({ kind: 'transfer', tierId: position.tierId, count: Number(sendCount), to: getAddress(recipient) })}>Review transfer</button>
                       <button type="button" onClick={() => setRowAction(null)}>Cancel</button>
                     </div>
                   </> : <>
-                    <p className="hint">Delegation applies to every position you hold in {market.ranges.find(range => range.tierId === token.tierId)?.label}.
+                    <p className="hint">Delegation applies to every position you hold in {label}.
                       {!lifecycle.canDelegate && ' It can change only while entry is open.'}</p>
-                    {lifecycle.delegates.some(item => item.tierId === token.tierId) && <p className="hint">Current delegate <code>{lifecycle.delegates.find(item => item.tierId === token.tierId)!.delegate}</code></p>}
+                    {lifecycle.delegates.some(item => item.tierId === position.tierId) && <p className="hint">Current delegate <code>{lifecycle.delegates.find(item => item.tierId === position.tierId)!.delegate}</code></p>}
                     <label className="field"><span>Voting delegate</span><input value={delegatee} spellCheck={false} autoComplete="off" placeholder="0x…" onChange={event => setDelegatee(event.target.value)} /></label>
                     <div className="actions">
                       {address && <button type="button" onClick={() => setDelegatee(address)}>Use my wallet</button>}
                       <button type="button" disabled={!canAct || !lifecycle.canDelegate || !isAddress(delegatee)}
-                        onClick={() => void act({ kind: 'delegate', tierIds: [token.tierId], delegatee: getAddress(delegatee) })}>Review delegation</button>
+                        onClick={() => void act({ kind: 'delegate', tierIds: [position.tierId], delegatee: getAddress(delegatee) })}>Review delegation</button>
                       <button type="button" onClick={() => setRowAction(null)}>Cancel</button>
                     </div>
                   </>}
                 </td></tr>}
-                </Fragment>)}
+                </Fragment> })}
               </tbody></table></div>}
-            <div className="actions">
-              <span className="hint">{tokenIds.length} / {MAX_POSITIONS} selected</span>
-              <button type="button" disabled={!current || busy || tokenIds.length >= MAX_POSITIONS || inventory.tokens.every(token => !!selected[token.tokenId])} onClick={selectShown}>Select shown</button>
-              {inventoryPaged && <button type="button" disabled={loading || busy} onClick={() => onPage('inventory')}>First positions</button>}
-              {inventory.nextCursor && <button type="button" disabled={loading || busy} onClick={() => onPage('inventory', inventory.nextCursor!)}>Load more positions</button>}
-              {tokenIds.length > 0 && <button type="button" disabled={busy} onClick={() => setSelections(previous => ({ ...previous, [walletKey]: {} }))}>Clear selection ({tokenIds.length})</button>}
-            </div>
+            {lifecycle.cashOutMode && positions.length > 0 && <div className="actions">
+              <button type="button" disabled={!current || busy} onClick={() => select(Object.fromEntries(positions.map(position => [position.tierId, Math.min(position.count, MAX_POSITIONS)])))}>Select all</button>
+              {burnCount > 0 && <button type="button" disabled={busy} onClick={() => select({})}>Clear selection ({burnCount})</button>}
+            </div>}
           </>}
       {isSigna && <p className="hint">Use an external wallet for game transactions. <button type="button" onClick={() => connect({ externalOnly: true })}>Use external wallet</button></p>}
       {lifecycle.cashOutMode && <div className="section">
         <h3>{cashOutLabel}</h3>
-        <p className="hint">Select the positions to burn. {lifecycle.cashOutMode === 'cash-out' ? 'The ratified result determines their payout.' : 'Refunding returns their available value.'}</p>
-        {tokenIds.length > 0 && matchingWallet && <>
+        <p className="hint">Choose how many positions to burn in each range. {lifecycle.cashOutMode === 'cash-out' ? 'The ratified result determines their payout.' : 'Refunding returns their available value.'}</p>
+        {burnCount > 0 && matchingWallet && <>
           {quote.isFetching && <p role="status">Checking the selected positions and payout…</p>}
           {quote.error && <p className="error" role="alert">{quote.error.message}</p>}
           {quoteReady && quote.data && <dl className="facts">
-            <dt>Positions burned</dt><dd>{tokenIds.length}</dd>
+            <dt>Positions burned</dt><dd>{burnCount}</dd>
             <dt>Minimum ETH received</dt><dd>{formatEther(BigInt(quote.data.reclaimWei))} ETH</dd>
             {BigInt(quote.data.defifaTokenWei) > 0n && <><dt>Defifa token reward</dt><dd>{formatEther(BigInt(quote.data.defifaTokenWei))} <a href={`${explorer}/token/${quote.data.defifaToken}`} target="_blank" rel="noreferrer">View token</a></dd></>}
             {BigInt(quote.data.baseProtocolTokenWei) > 0n && <><dt>Protocol token reward</dt><dd>{formatEther(BigInt(quote.data.baseProtocolTokenWei))} <a href={`${explorer}/token/${quote.data.baseProtocolToken}`} target="_blank" rel="noreferrer">View token</a></dd></>}
             <dt>Quote block</dt><dd>{quote.data.blockNumber}</dd>
           </dl>}
         </>}
-        <div className="actions"><button type="button" disabled={!canAct || !quoteReady || !quote.data || tokenIds.length === 0 || tokenIds.length > MAX_POSITIONS}
-          onClick={() => quote.data && void act({ kind: 'cash-out', tokenIds, minReclaimedWei: quote.data.reclaimWei })}>Review {cashOutLabel.toLowerCase()}</button></div>
+        <div className="actions"><button type="button" disabled={!canAct || !quoteReady || !quote.data || burnCount === 0}
+          onClick={() => quote.data && void act({ kind: 'cash-out', positions: burning, minReclaimedWei: quote.data.reclaimWei })}>Review {cashOutLabel.toLowerCase()}</button></div>
       </div>}
     </section>
     <section role="tabpanel" id="panel-results" aria-labelledby="scorecards" hidden={panel !== 'results'}>
@@ -242,15 +223,17 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
             onClick={() => void act({ kind: 'attest', scorecardId: card.scorecardId })}>Attest</button>
           <button type="button" aria-label={`Revoke attestation for result ${card.scorecardId}`} disabled={!canAct || !card.canRevoke}
             onClick={() => void act({ kind: 'revoke', scorecardId: card.scorecardId })}>Revoke attestation</button>
-          <button type="button" aria-label={`Ratify result ${card.scorecardId}`} disabled={!canAct || !card.canRatify}
+          {card.forwarded ? <button type="button" aria-label={`Ratify result ${card.scorecardId}`} disabled={!canAct || !card.canRatify}
             onClick={() => void act({ kind: 'ratify', weights: card.weights })}>Ratify</button>
+            : <button type="button" aria-label={`Queue result ${card.scorecardId}`} disabled={!canAct || !card.canForward}
+              onClick={() => void act({ kind: 'forward', weights: card.weights })}>Queue for ratification</button>}
         </div>
-        {!card.canRatify && ratifyNote(card, lifecycle.timelockSeconds) && <p className="hint">{ratifyNote(card, lifecycle.timelockSeconds)}</p>}
+        {ratifyNote(card, lifecycle.timelockSeconds) && <p className="hint">{ratifyNote(card, lifecycle.timelockSeconds)}</p>}
         {card.state !== 5 && <VoterList market={market} card={card} />}
       </details>)}
       <div className="actions">
-        {scorecardsPaged && <button type="button" disabled={loading || busy} onClick={() => onPage('scorecards')}>First results</button>}
-        {lifecycle.scorecardsNextCursor && <button type="button" disabled={loading || busy} onClick={() => onPage('scorecards', lifecycle.scorecardsNextCursor!)}>Load more results</button>}
+        {scorecardsPaged && <button type="button" disabled={loading || busy} onClick={() => onPage()}>First results</button>}
+        {lifecycle.scorecardsNextCursor && <button type="button" disabled={loading || busy} onClick={() => onPage(lifecycle.scorecardsNextCursor!)}>Load more results</button>}
       </div>
       {lifecycle.scorecards.length === 0 || propose}
       {lifecycle.canFulfill && <div className="actions"><button type="button" disabled={!canAct} onClick={() => void act({ kind: 'fulfill' })}>Review commitment fulfillment</button></div>}
@@ -300,12 +283,13 @@ function VoterList({ market, card }: { market: LifecycleSnapshot['market']; card
 const shortId = (id: string) => id.length > 12 ? `${id.slice(0, 4)}…${id.slice(-4)}` : id
 
 /** Why a result cannot be ratified yet, from its state, quorum and the earliest the timelock can end. */
+/** What the result waits on: attestations, the grace period, queueing, then the governor's timelock. */
 function ratifyNote(card: LifecycleSnapshot['scorecards'][number], timelock: number) {
   const missing = BigInt(card.quorum) - BigInt(card.attestationCount)
-  const earliest = utcTime(card.gracePeriodEnds + timelock)
   if (card.state === 0) return `Attestations open ${utcTime(card.attestationsBegin)}.`
-  if (card.state === 1) return missing > 0n ? `Needs ${missing.toLocaleString('en-US')} more attestation weight; ratify from ${earliest} at the earliest.` : `Ratify from ${earliest} at the earliest.`
-  if (card.state === 4) return `In the ratification timelock; ratify from ${earliest} at the earliest.`
+  if (card.state === 1) return missing > 0n ? `Needs ${missing.toLocaleString('en-US')} more attestation weight.` : `Can be queued after ${utcTime(card.gracePeriodEnds)}.`
+  if (card.state === 3 && !card.forwarded) return `Reached quorum. Queue it to start the ${duration(timelock)} timelock.`
+  if (card.state === 4 && card.ratifiableAt !== null) return `Ratify from ${utcTime(card.ratifiableAt)}.`
   return null
 }
 

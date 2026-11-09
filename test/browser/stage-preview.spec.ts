@@ -4,7 +4,7 @@ import type { LifecycleSnapshot } from '../../src/lib/defifa-lifecycle'
 const opening = Math.floor(Date.now() / 1000) - 90_000
 const snapshot: LifecycleSnapshot = {
   market: {
-    chainId: 84532, projectId: '47', hook: '0x1111111111111111111111111111111111111111', governor: '0x2222222222222222222222222222222222222222',
+    chainId: 84532, projectId: '47', hook: '0x1111111111111111111111111111111111111111', governor: '0x2222222222222222222222222222222222222222', referee: '0x2222222222222222222222222222222222222222',
     definition: {
       schemaVersion: 1, settlement: 'defifa-scorecard', prompt: 'Preview market', source: 'Test source', resolutionRule: 'Observe it.',
       entryOpensAt: opening, entryClosesAt: opening + 86_400, resolvesAt: opening + 172_800, rangeCount: 3, rangeWidth: 1, unitPriceWei: '1000000000000',
@@ -14,7 +14,7 @@ const snapshot: LifecycleSnapshot = {
     tiers: [1, 2, 3].map(tierId => ({ tierId, supply: '0', entrySupply: null, priceWei: '1000000000000', remainingSupply: '999999999' })),
     ratifiedScorecardId: null, ratifiedWeights: null, cashOutWeightTotal: '1000000000000000000', commitmentsFulfilled: false, noContestTriggered: false,
   },
-  account: null, inventory: { tokens: [], totalOwned: '0', totalCandidates: '0', nextCursor: null, complete: true }, delegates: [],
+  account: null, positions: [], delegates: [],
   scorecards: [], scorecardsNextCursor: null, scorecardsComplete: true, attestationGraceSeconds: 86400, timelockSeconds: 3600,
   noContestAfter: opening + 606300, canSubmitScorecard: false, canDelegate: false, canFulfill: false, canTriggerNoContest: false, cashOutMode: null,
 }
@@ -77,10 +77,11 @@ test('in play, the Market tab adds an order book that cannot trade without a ven
   await page.route('**/api.coinbase.com/**', route => route.abort())
   await page.route('**/api/markets/84532/47/play?*', route => route.fulfill({ json: { ...snapshot, market: { ...snapshot.market,
     potWei: '6000000000000', tiers: snapshot.market.tiers.map(tier => ({ ...tier, supply: '2' })) } } }))
+  await page.route('**/api/markets/84532/47/activity?*', route => route.fulfill({ json: { schema: 'metalog.activity.v2', events: [], complete: true, nextCursor: null } }))
   await page.goto('/markets/84532/47')
   const book = page.getByRole('region', { name: 'Order book', exact: true })
   await expect(book).toBeVisible()
-  await expect(page.getByRole('region', { name: 'Activity', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Activity', exact: true })).toBeVisible()
   // Production has no venue: no sample prices or odds, and nothing can be bought or sold.
   await expect(book.getByText('Sample book', { exact: false })).toHaveCount(0)
   await expect(book.getByText('No trading venue is connected yet.', { exact: true })).toBeVisible()
