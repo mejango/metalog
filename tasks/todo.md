@@ -159,6 +159,8 @@ Resources: `/Users/jango/Documents/jb/v6/evm/AGENTS.md`, `/Users/jango/Documents
 
 Review: both regression tests failed on the old code (lifecycle fork: "Preparing market…" shown with the review dialog open; activity.spec: older page gone after a market refresh) and pass after the fixes. metalog-1/2/17 wait for SDK 6.x adoption (writeHold, useReviewedRun); metalog-2 has two verified recovery dead ends that adoption closes.
 
+Codex pass 1 (Medium): a page fetch started in the same commit as the snapshot reread cancelled it (TanStack `cancelRefetch`), so new head activity never appeared while more pages remained. Automatic paging now waits until the loaded pages are read at the current snapshot block. Test: activity.spec "a market refresh finishes before the feed reads further back", failed on the old code, passes now.
+
 # State machines wave 3: SDK write hold and Signa connect (2026-11-09)
 
 Resources: as above, plus scratchpad `sm/BRIEF3.md` and `sm/sdk.md`. Branch `state-machines-3-2026-11-09` stacked on `state-machines-2026-11-09`; SDK core 6.0.0 tarball and `@me.jango/signa` 0.4.0 installed with `--no-save`.

@@ -49,3 +49,38 @@ test('a market refresh keeps the older activity already loaded', async ({ page }
   await expect(feed.getByText('0xaaaa…aaaa', { exact: true })).toBeVisible()
   await expect(feed.getByText('0xbbbb…bbbb', { exact: true })).toBeVisible()
 })
+
+test('a market refresh finishes before the feed reads further back', async ({ page }) => {
+  let block = 100
+  await page.route('**/api.coinbase.com/**', route => route.abort())
+  await page.route('**/api.exchange.coinbase.com/**', route => route.abort())
+  await page.route('**/api/markets/8453/29/play?*', route => route.fulfill({ json: snapshot(block) }))
+  const latest = '0xcccccccccccccccccccccccccccccccccccccccc'
+  let release!: () => void
+  const held = new Promise<void>(resolve => { release = resolve })
+  const reads: string[] = []
+  await page.route('**/api/markets/8453/29/activity?*', async route => {
+    const url = new URL(route.request().url())
+    const at = url.searchParams.get('blockNumber')!, cursor = url.searchParams.get('cursor')
+    reads.push(`${at}:${cursor ?? 'first'}`)
+    if (!cursor) return route.fulfill({ json: { schema: 'metalog.activity.v2', events: at === '100' ? [event(newer, now - 60)] : [event(latest, now - 30), event(newer, now - 60)], complete: false, nextCursor: 'c1' } })
+    // The second page is still loading when the market refreshes; a third page never completes.
+    if (cursor === 'c1') {
+      if (at === '100') await held
+      return route.fulfill({ json: { schema: 'metalog.activity.v2', events: [event(older, now - 7200)], complete: false, nextCursor: 'c2' } })
+    }
+  })
+  await page.goto('/markets/8453/29')
+  const feed = page.locator('.activity-feed')
+  await expect(feed.getByText('0xaaaa…aaaa', { exact: true })).toBeVisible()
+  await expect.poll(() => reads).toContain('100:c1')
+
+  block = 101
+  await page.getByRole('tab', { name: /^Your position/ }).click()
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click()
+  await page.getByRole('tab', { name: /^Market/ }).click()
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  release()
+  await expect(feed.getByText('0xcccc…cccc', { exact: true })).toBeVisible()
+  await expect(feed.getByText('0xbbbb…bbbb', { exact: true })).toBeVisible()
+})
