@@ -19,19 +19,25 @@ const ago = (seconds: number) => {
 export function Activity({ market, active }: { market: MarketSnapshot; active: boolean }) {
   const explorer = chainForId(market.chainId).blockExplorers.default.url
   const query = useInfiniteQuery({
-    queryKey: ['market-activity', market.chainId, market.projectId, market.blockNumber], enabled: active,
+    queryKey: ['market-activity', market.chainId, market.projectId], enabled: active,
     initialPageParam: undefined as string | undefined,
     queryFn: async ({ pageParam, signal }) => {
-      const params = new URLSearchParams({ blockNumber: market.blockNumber, ...(pageParam ? { cursor: pageParam } : {}) })
+      const blockNumber = market.blockNumber
+      const params = new URLSearchParams({ blockNumber, ...(pageParam ? { cursor: pageParam } : {}) })
       const response = await fetch(`/api/markets/${market.chainId}/${market.projectId}/activity?${params}`, { signal })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || 'Activity could not be read.')
-      return data as ActivityPage
+      return { ...data as ActivityPage, blockNumber }
     },
     getNextPageParam: last => last.nextCursor ?? undefined, staleTime: Infinity, refetchOnWindowFocus: false,
   })
   const events = query.data?.pages.flatMap(page => page.events) ?? []
-  const { hasNextPage, isFetching, fetchNextPage } = query
+  const { hasNextPage, isFetching, fetchNextPage, refetch } = query
+  // A newer snapshot rereads every loaded page at its block; the shown pages stay until the reread completes.
+  const readAt = query.data?.pages[0]?.blockNumber
+  useEffect(() => {
+    if (active && readAt !== undefined && readAt !== market.blockNumber && !isFetching && !query.error) void refetch()
+  }, [active, readAt, market.blockNumber, isFetching, query.error, refetch])
   // Keep reading back while the end of the list is near the screen.
   const end = useRef<HTMLDivElement>(null)
   const [near, setNear] = useState(false)
@@ -46,7 +52,7 @@ export function Activity({ market, active }: { market: MarketSnapshot; active: b
   }, [active, near, hasNextPage, isFetching, fetchNextPage, query.error])
   return <section aria-labelledby="activity-heading" className="activity">
     <h3 id="activity-heading">Activity</h3>
-    {query.error && <p className="error" role="alert">{query.error.message} <button type="button" onClick={() => void (query.data ? fetchNextPage() : query.refetch())}>Retry</button></p>}
+    {query.error && <p className="error" role="alert">{query.error.message} <button type="button" onClick={() => void (query.isFetchNextPageError ? fetchNextPage() : refetch())}>Retry</button></p>}
     <ol className="activity-feed">
       {events.map(event => <ActivityRow key={`${event.transactionHash}:${event.kind}`} event={event} market={market} explorer={explorer} />)}
     </ol>
