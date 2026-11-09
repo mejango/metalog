@@ -33,6 +33,8 @@ test('the built website creates, enters, refunds, transfers, settles and claims 
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
     await expect(dialog.getByText('Base Sepolia', { exact: true })).toBeVisible()
+    // Preparation ended at the hand-off; the transaction status card owns the line from here.
+    expect(await page.getByText(/^Preparing (transaction|entry|market)…$/).count()).toBe(0)
     await dialog.getByRole('button', { name: 'Continue to wallet', exact: true }).click()
     await expect(dialog).toBeHidden()
     await expect.poll(() => wallet.transactions.length, { timeout: 90_000 }).toBe(before + 1)

@@ -10,7 +10,7 @@ import { forecastSIPmath } from '@/lib/sipmath'
 import { orderReturns } from '@/domain/book'
 import { useLiveOutcome } from '@/lib/live-outcome'
 import { useWallet } from '@/providers/Providers'
-import { useTransactions } from '@/providers/Transactions'
+import { usePreparedWrite, useTransactions } from '@/providers/Transactions'
 import { PositionChart } from './PositionChart'
 
 const COEFFICIENT_LABELS = ['Median', 'Base spread', 'Tail asymmetry', 'Middle spread', 'Shape asymmetry', 'Tail spread']
@@ -40,10 +40,9 @@ export function ForecastEditor({ definition, market, current = true, onSubmitted
   const [mode, setMode] = useState<EditorMode>('moments')
   const [quantities, setQuantities] = useState<string[] | null>(null)
   const [referenceCurve, setReferenceCurve] = useState(() => coefficientsFromMoments(0, 2))
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState('')
   const { address, isSigna, connect } = useWallet()
   const transactions = useTransactions()
+  const { preparing: submitting, error, setError, run } = usePreparedWrite()
   const manual = mode === 'ranges'
   const budget = mode === 'coefficients' ? budgets.coefficients : budgets.moments
   const curve = useMemo(() => {
@@ -135,15 +134,9 @@ export function ForecastEditor({ definition, market, current = true, onSubmitted
     if (!address) { connect(); return }
     if (isSigna) { connect({ externalOnly: true }); return }
     if (!market || !model.preview || !curve.coefficients) return
-    setError('')
-    setSubmitting(true)
-    try {
-      const { prepareEntry } = await import('@/lib/defifa')
-      const prepared = await prepareEntry(market, model.preview.allocation, address, curve.coefficients)
-      const receipt = await transactions.executeMarket(prepared, market)
-      if (receipt) onSubmitted?.()
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Entry could not be prepared.') }
-    finally { setSubmitting(false) }
+    const { allocation } = model.preview, coefficients = curve.coefficients
+    await run(async () => (await import('@/lib/defifa')).prepareEntry(market, allocation, address, coefficients),
+      prepared => transactions.executeMarket(prepared, market), () => onSubmitted?.(), 'Entry could not be prepared.')
   }
   const closed = market && market.stage !== 'entry'
   // After entry, the chart shows the crowd and payout; the checkout stays mounted so a draft survives.

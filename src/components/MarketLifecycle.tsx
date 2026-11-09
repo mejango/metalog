@@ -8,7 +8,7 @@ import { scorecardWeightsFromPercentages } from '@/domain/scorecard'
 import type { LifecycleAction, LifecycleSnapshot, ResultVoters } from '@/lib/defifa-lifecycle'
 import { chainForId } from '@/lib/wallet'
 import { useWallet } from '@/providers/Providers'
-import { useTransactions } from '@/providers/Transactions'
+import { usePreparedWrite, useTransactions } from '@/providers/Transactions'
 import { utcTime } from './MarketFacts'
 import { RangeStrip } from './RangeStrip'
 import { useLiveOutcome } from '@/lib/live-outcome'
@@ -41,8 +41,7 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   // Preset markets can read their own result once observation ends; proposing it is one click.
   const observed = useLiveOutcome(market.definition, market.stage === 'settlement' ? 'final' : null)
   const observedRange = observed?.final ? binForOutcome(market.ranges, observed.value) : null
-  const [preparing, setPreparing] = useState(false)
-  const [actionError, setActionError] = useState('')
+  const { preparing, error: actionError, run } = usePreparedWrite()
   const walletKey = address?.toLowerCase() ?? ''
   const selected = selections[walletKey] ?? {}
   const burning = positions.flatMap(position => {
@@ -75,19 +74,12 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   }
   async function act(action: LifecycleAction) {
     if (!canAct || !address) return
-    setActionError('')
-    setPreparing(true)
-    try {
-      const { prepareLifecycleAction } = await import('@/lib/defifa-lifecycle')
-      const prepared = await prepareLifecycleAction(market, action, address)
-      const receipt = await transactions.executeMarket(prepared, market)
-      if (receipt) {
+    await run(async () => (await import('@/lib/defifa-lifecycle')).prepareLifecycleAction(market, action, address),
+      prepared => transactions.executeMarket(prepared, market), () => {
         setRowAction(null)
         if (action.kind === 'transfer' || action.kind === 'cash-out') select({})
         onRefresh()
-      }
-    } catch (cause) { setActionError(cause instanceof Error ? cause.message : 'The transaction could not be prepared.') }
-    finally { setPreparing(false) }
+      }, 'The transaction could not be prepared.')
   }
 
   const propose = <>

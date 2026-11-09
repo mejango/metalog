@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { formatEther, parseEther } from 'viem'
 import { MIN_NEW_UNIT_PRICE_WEI, parseDefaultDelegate, validateMarket } from '@/domain/market'
@@ -9,7 +9,7 @@ import { SUPPORTED_CHAINS } from '@/lib/wallet'
 import { downloadJson } from '@/lib/forecast'
 import { rememberMarket } from '@/lib/recent-markets'
 import { useWallet } from '@/providers/Providers'
-import { useTransactions } from '@/providers/Transactions'
+import { usePreparedWrite, useTransactions } from '@/providers/Transactions'
 import { RangePreview } from './RangePreview'
 import { RANGE_PRESETS, buildRangePreset, type RangePresetId } from '@/domain/range-presets'
 import { namedRanges, resizeRangeBoundaries, validateCustomRangeCount } from '@/domain/ranges'
@@ -56,10 +56,8 @@ export function CreateMarket({ now }: { now: number }) {
   const [price, setPrice] = useState('0.001')
   const [chainId, setChainId] = useState(8453)
   const isTestnet = SUPPORTED_CHAINS.some(chain => chain.id === chainId && 'testnet' in chain && chain.testnet)
-  const [busy, setBusy] = useState(false)
   const [attemptId, setAttemptId] = useState<string | null>(null)
-  const creating = useRef(false)
-  const [error, setError] = useState('')
+  const { preparing: busy, error, setError, run } = usePreparedWrite()
   const [showValidation, setShowValidation] = useState(false)
   const router = useRouter()
   const wallet = useWallet()
@@ -190,29 +188,24 @@ export function CreateMarket({ now }: { now: number }) {
   }
   async function create(event: React.FormEvent) {
     event.preventDefault()
-    if (creating.current || transactions.busy || !transactions.canCreateNewMarket || (attemptId && transactions.isCreationPending(attemptId))) return
+    if (busy || transactions.busy || !transactions.canCreateNewMarket || (attemptId && transactions.isCreationPending(attemptId))) return
     setShowValidation(true)
     setError('')
     if (!draft.definition) return
     if (!wallet.address) { wallet.connect(); return }
     if (wallet.isSigna) { wallet.connect({ externalOnly: true }); return }
-    creating.current = true
-    setBusy(true)
-    setError('')
-    try {
-      const currentAttempt = attemptId ?? crypto.randomUUID()
-      setAttemptId(currentAttempt)
-      const { prepareCreateMarket, createdMarketId } = await import('@/lib/defifa')
-      const prepared = await prepareCreateMarket(draft.definition, chainId, wallet.address)
-      const receipt = await transactions.executeNewMarket(prepared, currentAttempt)
-      if (receipt) {
-        const projectId = createdMarketId(receipt)
-        if (!projectId) throw new Error('The transaction was confirmed, but its game ID could not be read. Check the transaction before creating again.')
-        rememberMarket(chainId, projectId)
-        router.push(`/markets/${chainId}/${projectId}`)
-      }
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Market could not be prepared.') }
-    finally { creating.current = false; setBusy(false) }
+    const definition = draft.definition, account = wallet.address
+    await run(async () => {
+      const attempt = attemptId ?? crypto.randomUUID()
+      setAttemptId(attempt)
+      const { prepareCreateMarket } = await import('@/lib/defifa')
+      return { attempt, prepared: await prepareCreateMarket(definition, chainId, account) }
+    }, ({ attempt, prepared }) => transactions.executeNewMarket(prepared, attempt), async receipt => {
+      const projectId = (await import('@/lib/defifa')).createdMarketId(receipt)
+      if (!projectId) throw new Error('The transaction was confirmed, but its game ID could not be read. Check the transaction before creating again.')
+      rememberMarket(chainId, projectId)
+      router.push(`/markets/${chainId}/${projectId}`)
+    }, 'Market could not be prepared.')
   }
   return <form className="form-narrow" onSubmit={create} onChange={() => setError('')} onInvalid={event => {
     // Native constraints run before onSubmit, including required date inputs.

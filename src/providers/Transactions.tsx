@@ -36,6 +36,28 @@ export function useTransactions() {
   return value
 }
 
+/** Prepare a write, hand it to the transaction runner, then apply its confirmed receipt. One run at a time; `preparing` ends at the hand-off. */
+export function usePreparedWrite() {
+  const [preparing, setPreparing] = useState(false)
+  const [error, setError] = useState('')
+  const active = useRef(false)
+  const run = useCallback(async <T,>(prepare: () => Promise<T>, send: (prepared: T) => Promise<TransactionReceipt | null>,
+    settle: (receipt: TransactionReceipt) => void | Promise<void>, fallback: string) => {
+    if (active.current) return
+    active.current = true
+    setError('')
+    setPreparing(true)
+    try {
+      const prepared = await prepare()
+      setPreparing(false)
+      const receipt = await send(prepared)
+      if (receipt) await settle(receipt)
+    } catch (cause) { setError(cause instanceof Error ? cause.message : fallback) }
+    finally { active.current = false; setPreparing(false) }
+  }, [])
+  return { preparing, error, setError, run }
+}
+
 const identity = () => {
   const current = getAccount(wagmiConfig)
   return { address: current.address, chainId: current.chainId, connectorUid: current.connector?.uid, isSigna: current.connector?.id === 'juicebox-center' }
