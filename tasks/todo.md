@@ -158,3 +158,20 @@ Resources: `/Users/jango/Documents/jb/v6/evm/AGENTS.md`, `/Users/jango/Documents
 - [x] Gates, PR (no merge)
 
 Review: both regression tests failed on the old code (lifecycle fork: "Preparing market…" shown with the review dialog open; activity.spec: older page gone after a market refresh) and pass after the fixes. metalog-1/2/17 wait for SDK 6.x adoption (writeHold, useReviewedRun); metalog-2 has two verified recovery dead ends that adoption closes.
+
+# State machines wave 3: SDK write hold and Signa connect (2026-11-09)
+
+Resources: as above, plus scratchpad `sm/BRIEF3.md` and `sm/sdk.md`. Branch `state-machines-3-2026-11-09` stacked on `state-machines-2026-11-09`; SDK core 6.0.0 tarball and `@me.jango/signa` 0.4.0 installed with `--no-save`.
+
+## Plan refinement
+- **Objective:** Metalog sends and recovers exactly like the standard clients: `createWriteHold` + `useReviewedRun`, no legacy journal, no metalog-only SDK knobs. Closes metalog-1, metalog-2 (both dead ends) and metalog-17.
+- **System fit:** Core owns review, simulation, gas (`gasWithHeadroom`, no local clamp), the hold, exits and receipts. Metalog keeps calldata, `reverify`, receipt effects (`verifyReceipt`) and its intents: one hold per market, one per creation definition. Connect moves to Signa.
+- **Reuse and simplicity:** The old journal keys are dropped with no importer. One status card, one review dialog over the SDK model, the SDK's held notice per chain.
+- **Verification:** Hold scope and exit tests (failed on the old module), `npm run check`, browser suite, lifecycle fork.
+
+- [x] Scope and dead-end tests first (market A held, B and other creations proceed; no-hash exit; cancelled replacement exit)
+- [x] Transactions provider on useReviewedRun; components send under intents; review dialog renders the model
+- [x] Effects after settle: verifyReceipt, then refresh reads and Recently opened, on the direct and the held path
+- [x] Delete the journal, legacy recovery verifier and their tests; port fork integration to sendReviewed
+- [x] Connect from @me.jango/signa
+- [x] Gates, draft PR (no merge)

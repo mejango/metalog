@@ -9,6 +9,7 @@ import type { LifecycleAction, LifecycleSnapshot, ResultVoters } from '@/lib/def
 import { chainForId } from '@/lib/wallet'
 import { useWallet } from '@/providers/Providers'
 import { usePreparedWrite, useTransactions } from '@/providers/Transactions'
+import { marketIntent } from '@/lib/transaction'
 import { utcTime } from './MarketFacts'
 import { RangeStrip } from './RangeStrip'
 import { useLiveOutcome } from '@/lib/live-outcome'
@@ -50,7 +51,7 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   })
   const burnCount = burning.reduce((sum, position) => sum + position.count, 0)
   const matchingWallet = !!address && lifecycle.account?.toLowerCase() === walletKey
-  const busy = preparing || transactions.busy || transactions.hasPendingForMarket(market)
+  const busy = preparing || transactions.busy
   const canAct = current && matchingWallet && !isSigna && !busy
   const explorer = chainForId(market.chainId).blockExplorers.default.url
   const scoreDraft = useMemo(() => {
@@ -75,7 +76,7 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   async function act(action: LifecycleAction) {
     if (!canAct || !address) return
     await run(async () => (await import('@/lib/defifa-lifecycle')).prepareLifecycleAction(market, action, address),
-      prepared => transactions.executeMarket(prepared, market), () => {
+      prepared => transactions.execute(prepared, marketIntent(market)), () => {
         setRowAction(null)
         if (action.kind === 'transfer' || action.kind === 'cash-out') select({})
         onRefresh()

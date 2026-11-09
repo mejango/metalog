@@ -1,18 +1,16 @@
-import { expect, it, vi } from 'vitest'
+import { expect, it } from 'vitest'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { decodeFunctionData, zeroAddress, type Hex, type TransactionReceipt } from 'viem'
+import { decodeFunctionData, zeroAddress } from 'viem'
 import { allocatePositions } from '../../src/domain/allocation'
 import { validateCoefficients } from '../../src/domain/distribution'
 import { validateMarket } from '../../src/domain/market'
 import {
-  createdMarketId, DEFIFA_ABI, prepareCreateMarket, prepareEntry, readMarket, receiptMoves, verifyDefifaTransactionReceipt,
+  createdMarketId, DEFIFA_ABI, prepareCreateMarket, prepareEntry, readMarket, receiptMoves,
 } from '../../src/lib/defifa'
-import {
-  executeTransaction, readPendingTransaction, recoverTransaction, type TransactionRuntime,
-} from '../../src/lib/transaction'
+import { creationIntent, marketIntent } from '../../src/lib/transaction'
 import { loadMarketMetadata } from '../../src/lib/market-metadata'
-import { startFork } from './fork'
+import { forkSender, startFork } from './fork'
 
 it('creates unequal ranges and recovers their curve-derived mint without sending twice on a Base Sepolia fork', async () => {
   const chainId = 84532
@@ -32,31 +30,15 @@ it('creates unequal ranges and recovers their curve-derived mint without sending
       defaultAttestationDelegate: fork.accounts[1],
     })
     const account = fork.accounts[0]
-    const values = new Map<string, string>()
-    const runtime: TransactionRuntime = {
-      client: fork.client,
-      storage: {
-        getItem: key => values.get(key) ?? null,
-        setItem: (key, value) => { values.set(key, value) },
-        removeItem: key => { values.delete(key) },
-      },
-      identity: () => ({ address: account, chainId, connectorUid: 'isolated-anvil', isSigna: false }),
-      review: async () => true,
-      onStatus: () => {},
-      switchChain: async target => { expect(target).toBe(chainId) },
-      send: async request => {
-        expect(new URL(fork.url).hostname).toBe('127.0.0.1')
-        return fork.wallet(account).sendTransaction(request)
-      },
-    }
+    const sender = forkSender(fork)
+    expect(new URL(fork.url).hostname).toBe('127.0.0.1')
     const preparedCreation = await prepareCreateMarket(definition, chainId, account)
     const launch = decodeFunctionData({ abi: DEFIFA_ABI.DefifaDeployer, data: preparedCreation.data }).args![0] as { projectUri: string }
     expect(launch.projectUri).toMatch(/^ipfs:\/\/Qm/)
     const published = await loadMarketMetadata(launch.projectUri)
-    const creation = await executeTransaction(preparedCreation, runtime)
+    const creation = await sender.send(preparedCreation, creationIntent(chainId, definition))
     console.info('Local IPFS market created', { chainId, projectUri: published.projectUri, transactionHash: creation.transactionHash })
     expect(creation.status).toBe('success')
-    expect(readPendingTransaction(runtime.storage)).toBeNull()
     sent.push({ title: 'Create custom ranges', hash: creation.transactionHash, blockNumber: String(creation.blockNumber) })
 
     let market = await readMarket(chainId, createdMarketId(creation))
@@ -87,24 +69,15 @@ it('creates unequal ranges and recovers their curve-derived mint without sending
     const request = await prepareEntry(market, allocation, account, coefficients)
     expect(request.value).toBe(100n * BigInt(definition.unitPriceWei))
     console.info('Local 100-position entry prepared', { chainId, projectId: market.projectId })
-    const send = runtime.send
-    let hash: Hex | undefined
-    runtime.send = vi.fn(async call => {
-      hash = await send(call)
-      throw new Error('Injected lost wallet reply for the custom-range entry')
-    })
-    await expect(executeTransaction(request, runtime)).rejects.toThrow('lost wallet reply')
-    const saved = readPendingTransaction(runtime.storage)!
-    expect(saved.phase).toBe('unknown')
-    const restored = {
-      ...saved, value: BigInt(saved.value),
-      verifyReceipt: (receipt: TransactionReceipt) => verifyDefifaTransactionReceipt({ ...saved, value: BigInt(saved.value) }, receipt),
-    }
-    const recovered = await recoverTransaction(runtime, hash, restored)
+    const intent = marketIntent(market)
+    const nonce = await fork.client.getTransactionCount({ address: account })
+    await expect(sender.send(request, intent, true)).rejects.toThrow()
+    await expect(sender.send(request, intent)).rejects.toThrow()
+    const recovered = await sender.settledReceipt(request, intent)
     expect(recovered.status).toBe('success')
+    request.verifyReceipt!(recovered)
     console.info('Local 100-position entry recovered', { chainId, transactionHash: recovered.transactionHash })
-    expect(runtime.send).toHaveBeenCalledTimes(1)
-    expect(readPendingTransaction(runtime.storage)).toBeNull()
+    expect(await fork.client.getTransactionCount({ address: account })).toBe(nonce + 1)
     const mints = receiptMoves(market.hook, recovered).filter(move => move.from === zeroAddress)
     expect(mints.reduce((sum, move) => sum + move.value, 0n)).toBe(100n)
     // Native position labels are the onchain tier names. Full tokenURI also loads

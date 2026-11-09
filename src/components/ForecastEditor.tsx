@@ -11,6 +11,7 @@ import { orderReturns } from '@/domain/book'
 import { useLiveOutcome } from '@/lib/live-outcome'
 import { useWallet } from '@/providers/Providers'
 import { usePreparedWrite, useTransactions } from '@/providers/Transactions'
+import { marketIntent } from '@/lib/transaction'
 import { PositionChart } from './PositionChart'
 
 const COEFFICIENT_LABELS = ['Median', 'Base spread', 'Tail asymmetry', 'Middle spread', 'Shape asymmetry', 'Tail spread']
@@ -136,7 +137,7 @@ export function ForecastEditor({ definition, market, current = true, onSubmitted
     if (!market || !model.preview || !curve.coefficients) return
     const { allocation } = model.preview, coefficients = curve.coefficients
     await run(async () => (await import('@/lib/defifa')).prepareEntry(market, allocation, address, coefficients),
-      prepared => transactions.executeMarket(prepared, market), () => onSubmitted?.(), 'Entry could not be prepared.')
+      prepared => transactions.execute(prepared, marketIntent(market)), () => onSubmitted?.(), 'Entry could not be prepared.')
   }
   const closed = market && market.stage !== 'entry'
   // After entry, the chart shows the crowd and payout; the checkout stays mounted so a draft survives.
@@ -214,7 +215,7 @@ export function ForecastEditor({ definition, market, current = true, onSubmitted
       </div>}
       {model.error && !stakeError && <p id="forecast-error" className="error" role="alert">{model.error}</p>}
       <div className="actions ticket-actions">
-        {market && <button className="primary" disabled={!current || !model.preview || Boolean(closed) || submitting || transactions.busy || transactions.hasPendingForMarket(market!)} onClick={submit}>
+        {market && <button className="primary" disabled={!current || !model.preview || Boolean(closed) || submitting || transactions.busy} onClick={submit}>
           {submitting ? 'Preparing entry…' : !address ? 'Connect to enter' : isSigna ? 'Use external wallet to enter' : 'Review entry'}
         </button>}
         <button className="quiet" disabled={!model.preview} onClick={() => model.preview && downloadJson(model.preview, 'metalog-forecast.json')}>Download draft</button>

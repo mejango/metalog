@@ -4,8 +4,12 @@ import { createServer } from 'node:net'
 import { setTimeout as pause } from 'node:timers/promises'
 import {
   createPublicClient, createTestClient, createWalletClient, http,
-  type Address, type PublicClient,
+  type Address, type Hex, type PublicClient, type TransactionReceipt, type WalletClient,
 } from 'viem'
+import {
+  createHeldWriteStorage, createWriteHold, openStepHold, registerReviewHandler, sendReviewed, viemWalletAdapter, type WriteHoldClient,
+} from '@bananapus/nana-sdk-core/review'
+import { reviewedAction, type PreparedTransaction } from '../../src/lib/transaction'
 import { chainForId } from '../../src/lib/wallet'
 import { centerAppOrigin, centerBaseUrl } from '../../src/lib/center'
 import deploymentPins from '../../src/lib/defifa-deployments.json' with { type: 'json' }
@@ -109,3 +113,40 @@ export async function startFork(chainId: number) {
 }
 
 export type LocalFork = Awaited<ReturnType<typeof startFork>>
+
+/**
+ * Metalog's reviewed send on this fork, as the app runs it: the review confirmed, one write hold (in memory), and the
+ * confirmed receipt's effects checked. `lose` mines the write but loses the wallet's reply, as a closed tab does.
+ */
+export function forkSender(fork: LocalFork) {
+  const hold = createWriteHold({ storage: createHeldWriteStorage({ durable: () => undefined, memory: new Map() }) })
+  registerReviewHandler(async prompt => prompt.confirmation)
+  const send = async (prepared: PreparedTransaction, intent: string, lose = false): Promise<TransactionReceipt> => {
+    const wallet = fork.wallet(prepared.account)
+    const sent: WalletClient = lose
+      ? { ...wallet, sendTransaction: async (request: Parameters<typeof wallet.sendTransaction>[0]) => {
+        await wallet.sendTransaction(request)
+        throw new Error('Injected lost wallet reply after the local transaction was mined')
+      } } as WalletClient
+      : wallet
+    const adapter = viemWalletAdapter({
+      walletClient: async () => sent, account: () => prepared.account, chainId: () => fork.chainId,
+      isSafe: () => false, switchChain: async () => {},
+    })
+    const result = await sendReviewed(reviewedAction(prepared, intent), { adapter, hold, clientFor: () => fork.client })
+    if (result.status !== 'done') throw new Error(`The fork write ended ${result.status}.`)
+    const receipt = result.receipts.at(-1)!
+    await prepared.verifyReceipt?.(receipt)
+    return receipt
+  }
+  /** What the hold of `intent` settled, read from the chain alone: the receipt of the one transaction it proved. */
+  const settledReceipt = async (prepared: PreparedTransaction, intent: string): Promise<TransactionReceipt> => {
+    const handle = openStepHold(hold, prepared.account, false, reviewedAction(prepared, intent).calls[0])
+    const state = await handle.state(fork.client as unknown as WriteHoldClient)
+    if (state.status !== 'clear' || !state.settled || !('hash' in state.settled) || state.settled.result !== 'success') {
+      throw new Error(`The hold did not settle a success: ${state.status}.`)
+    }
+    return fork.client.getTransactionReceipt({ hash: state.settled.hash as Hex })
+  }
+  return { hold, send, settledReceipt }
+}

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  decodeAbiParameters, decodeFunctionData, encodeAbiParameters, encodeEventTopics, encodeFunctionData, getAddress, keccak256,
+  decodeAbiParameters, decodeFunctionData, encodeAbiParameters, encodeEventTopics, getAddress, keccak256,
   zeroAddress, zeroHash, stringToHex, type Address, type Hex, type TransactionReceipt,
 } from 'viem'
 import { bytes32ToCidV0, createHookMetadata, hookMetadataId } from '@bananapus/nana-sdk-core'
@@ -10,7 +10,7 @@ import { decodeMarketDefinition, encodeMarketDefinition, marketRanges, validateM
 import { createRanges } from '../src/domain/ranges'
 import {
   createdMarketId, DEFIFA_ABI, deploymentForChain, listMarkets, NATIVE_TOKEN, prepareCreateMarket, prepareEntry, readMarket,
-  verifyDefifaTransactionReceipt,
+  decodeEntryMemo, verifyRecordedEntry,
 } from '../src/lib/defifa'
 import { assertDeploymentCode, assertGameClone, verifyDefifaDeployment } from '../src/lib/defifa-deployment'
 import { forecastPreview } from '../src/lib/forecast'
@@ -229,7 +229,7 @@ describe('Defifa launch calldata and fresh state', () => {
     expect(publishMarketMetadata).toHaveBeenCalledTimes(1)
   })
 
-  it('publishes one IPFS project manifest and binds native tier names and zero hashes to launch and recovery', async () => {
+  it('publishes one IPFS project manifest and binds native tier names and zero hashes to launch and receipt', async () => {
     const tx = await prepareCreateMarket(customDefinition, chainId, account)
     const launch = decodeFunctionData({ abi: DEFIFA_ABI.DefifaDeployer, data: tx.data }).args![0] as {
       projectUri: string; contractUri: string; baseUri: string; tiers: { name: string; encodedIpfsUri: Hex }[];
@@ -247,10 +247,10 @@ describe('Defifa launch calldata and fresh state', () => {
     expect(loadMarketMetadata).toHaveBeenCalledWith(launch.projectUri)
     uri = launch.projectUri
     observedRanges = marketRanges(customDefinition)
-    await expect(verifyDefifaTransactionReceipt(tx, creationReceipt())).resolves.toBeUndefined()
+    await expect(tx.verifyReceipt!(creationReceipt())).resolves.toBeUndefined()
     alteredTierHash = 2
     await expect(readMarket(chainId, '7')).rejects.toThrow()
-    await expect(verifyDefifaTransactionReceipt(tx, creationReceipt())).rejects.toThrow()
+    await expect(tx.verifyReceipt!(creationReceipt())).rejects.toThrow()
     alteredTierHash = null
     alteredContractUri = encodeMarketDefinition(customDefinition)
     await expect(readMarket(chainId, '7')).rejects.toThrow()
@@ -259,7 +259,7 @@ describe('Defifa launch calldata and fresh state', () => {
     await expect(readMarket(chainId, '7')).rejects.toThrow()
   })
 
-  it('blocks preparation and recovery when Center metadata is unavailable or URI evidence changes', async () => {
+  it('blocks preparation and receipt checks when Center metadata is unavailable or URI evidence changes', async () => {
     mocks.publishMetadata.mockRejectedValueOnce(new Error('Center pin failed.'))
     await expect(prepareCreateMarket(definition, chainId, account)).rejects.toThrow('Center pin failed')
     const tx = await prepareCreateMarket(definition, chainId, account)
@@ -270,31 +270,13 @@ describe('Defifa launch calldata and fresh state', () => {
     const otherUri = `ipfs://${bytes32ToCidV0(keccak256(stringToHex('different project bytes')))}`
     publishedByUri.set(otherUri, { ...publishedByUri.get(uri)!, projectUri: otherUri, contractUri: otherUri })
     uri = otherUri
-    await expect(verifyDefifaTransactionReceipt(tx, creationReceipt())).rejects.toThrow('confirmed metadata URI')
+    await expect(tx.verifyReceipt!(creationReceipt())).rejects.toThrow('confirmed metadata URI')
     uri = launch.projectUri
-    const altered = { ...launch, tiers: launch.tiers.map((tier, index) => index === 0 ? { ...tier, encodedIpfsUri: keccak256(stringToHex('unreviewed tier CID')) } : tier) }
-    const tamperedData = encodeFunctionData({ abi: DEFIFA_ABI.DefifaDeployer, functionName: 'launchGameWith', args: [altered] } as never)
-    await expect(verifyDefifaTransactionReceipt({ ...tx, data: tamperedData }, creationReceipt())).rejects.toThrow('recorded creation')
     publishedByUri.delete(uri)
     await expect(tx.reverify!()).rejects.toThrow('Center metadata is unavailable')
-    await expect(verifyDefifaTransactionReceipt(tx, creationReceipt())).rejects.toThrow('Center metadata is unavailable')
   })
 
-  it('retains recovery for already-recorded embedded-metadata creation without republishing it', async () => {
-    const tx = await prepareCreateMarket(definition, chainId, account)
-    const launch = decodeFunctionData({ abi: DEFIFA_ABI.DefifaDeployer, data: tx.data }).args![0] as {
-      projectUri: string; contractUri: string; baseUri: string; tiers: { encodedIpfsUri: Hex }[];
-    }
-    uri = encodeMarketDefinition(definition)
-    const legacy = { ...launch, projectUri: uri, contractUri: uri, baseUri: '',
-      tiers: launch.tiers.map(tier => ({ ...tier, encodedIpfsUri: zeroHash })) }
-    const data = encodeFunctionData({ abi: DEFIFA_ABI.DefifaDeployer, functionName: 'launchGameWith', args: [legacy] } as never)
-    mocks.publishMetadata.mockClear()
-    await expect(verifyDefifaTransactionReceipt({ ...tx, data }, creationReceipt())).resolves.toBeUndefined()
-    expect(publishMarketMetadata).not.toHaveBeenCalled()
-  })
-
-  it('binds the default voting delegate to launch, entry review and recovered calldata', async () => {
+  it('binds the default voting delegate to launch, entry review and receipt', async () => {
     const delegated = validateMarket({ ...definition, defaultAttestationDelegate: hook })
     const launch = await prepareCreateMarket(delegated, chainId, account)
     const data = decodeFunctionData({ abi: DEFIFA_ABI.DefifaDeployer, data: launch.data }).args![0] as Record<string, unknown>
@@ -315,10 +297,7 @@ describe('Defifa launch calldata and fresh state', () => {
     expect(decoded.args![6]).toBe(payMetadata(hook, [1, 3]))
     expect(entry.details).toContainEqual({ label: 'Voting address', value: hook })
     expect(entry.details?.find(detail => detail.label === 'Voting power')?.value).toContain('all your existing')
-    await expect(verifyDefifaTransactionReceipt(entry, mintReceipt([1, 3]))).resolves.toBeUndefined()
-    uri = encodeMarketDefinition(definition)
-    observedDelegate = zeroAddress
-    await expect(verifyDefifaTransactionReceipt(entry, mintReceipt([1, 3]))).rejects.toThrow('mint metadata')
+    expect(() => entry.verifyReceipt!(mintReceipt([1, 3]))).not.toThrow()
   })
   it('encodes the native Defifa launch struct, immutable definition and exact creation fee', async () => {
     const tx = await prepareCreateMarket(definition, chainId, account)
@@ -373,7 +352,7 @@ describe('Defifa launch calldata and fresh state', () => {
     const metadata = payment.args![6] as Hex
     const expectedIds = preview.allocation.tierIds.flatMap((id, index) => Array<number>(preview.allocation.quantities[index]).fill(id))
     expect(metadata).toBe(payMetadata(account, expectedIds))
-    await expect(verifyDefifaTransactionReceipt(entry, mintReceipt(expectedIds))).resolves.toBeUndefined()
+    expect(() => entry.verifyReceipt!(mintReceipt(expectedIds))).not.toThrow()
     uri = encodeMarketDefinition({ ...custom, rangeWidth: 1 })
     await expect(readMarket(chainId, '7')).rejects.toThrow('onchain ranges')
     await expect(entry.reverify!()).rejects.toThrow('onchain ranges')
@@ -389,7 +368,7 @@ describe('Defifa launch calldata and fresh state', () => {
     await expect(prepareCreateMarket({ ...definition, prompt: 'a'.repeat(281) }, chainId, account)).rejects.toThrow('prompt')
   })
 
-  it('binds uneven cutoffs to reviewed launch tiers, exact entry allocations and receipt recovery', async () => {
+  it('binds uneven cutoffs to reviewed launch tiers, exact entry allocations and receipts', async () => {
     const preview = forecastPreview({ market: customDefinition, coefficients: [0, 1], positions: 100 })
     const launch = await prepareCreateMarket(customDefinition, chainId, account)
     const decoded = decodeFunctionData({ abi: DEFIFA_ABI.DefifaDeployer, data: launch.data })
@@ -412,7 +391,7 @@ describe('Defifa launch calldata and fresh state', () => {
     const payment = decodeFunctionData({ abi: DEFIFA_ABI.JBMultiTerminal, data: entry.data })
     expect(payment.args![6]).toBe(payMetadata(account, expectedIds))
     expect(entry.value).toBe(BigInt(customDefinition.unitPriceWei) * 100n)
-    await expect(verifyDefifaTransactionReceipt(entry, mintReceipt(expectedIds))).resolves.toBeUndefined()
+    expect(() => entry.verifyReceipt!(mintReceipt(expectedIds))).not.toThrow()
 
     const changed = { ...customDefinition, rangeBoundaries: [-5, -1, 0, 0.5, 5] } as MarketDefinition
     uri = encodeMarketDefinition(changed)
@@ -420,7 +399,6 @@ describe('Defifa launch calldata and fresh state', () => {
     await expect(entry.reverify!()).rejects.toThrow('onchain ranges')
     observedRanges = marketRanges(changed)
     await expect(entry.reverify!()).rejects.toThrow('market changed')
-    await expect(verifyDefifaTransactionReceipt(entry, mintReceipt(expectedIds))).rejects.toThrow('mint metadata')
   })
 })
 
@@ -520,7 +498,7 @@ describe('Defifa market reads and curve entry', () => {
     expect((await readMarket(chainId, '7')).stage).toBe('settlement')
   })
 
-  it('reviews, mints and recovers exact manual counts without reapportioning the source curve', async () => {
+  it('reviews and mints exact manual counts without reapportioning the source curve', async () => {
     now = definition.entryOpensAt + 1
     const market = await readMarket(chainId, '7')
     const coefficients = coefficientsFromMoments(0, 1)
@@ -544,13 +522,11 @@ describe('Defifa market reads and curve entry', () => {
     expect(tx.details).toContainEqual({ label: ranges[2].label, value: '3' })
     expect(() => tx.verifyReceipt!(mintReceipt(ids))).not.toThrow()
     expect(() => tx.verifyReceipt!(mintReceipt(ids.slice(1)))).toThrow('complete reviewed')
-    await expect(verifyDefifaTransactionReceipt(tx, mintReceipt(ids))).resolves.toBeUndefined()
-    await expect(verifyDefifaTransactionReceipt(tx, mintReceipt(ids.slice(1)))).rejects.toThrow('complete reviewed')
     remaining = 6
     await expect(tx.reverify!()).rejects.toThrow('enough positions')
   })
 
-  it('rejects tampered manual review fields and recovered quantity metadata', async () => {
+  it('rejects tampered manual review fields and recorded quantity metadata', async () => {
     now = definition.entryOpensAt + 1
     const market = await readMarket(chainId, '7')
     const coefficients = coefficientsFromMoments(0, 1)
@@ -561,17 +537,15 @@ describe('Defifa market reads and curve entry', () => {
     ]) await expect(prepareEntry(market, { ...allocation, ...patch } as Allocation, account, coefficients)).rejects.toThrow()
     const tx = await prepareEntry(market, allocation, account, coefficients)
     const decoded = decodeFunctionData({ abi: DEFIFA_ABI.JBMultiTerminal, data: tx.data })
-    const [projectId, token, amount, beneficiary, minimum, memoText, metadata] = decoded.args as
+    const [, , amount, , , memoText, metadata] = decoded.args as
       readonly [bigint, Address, bigint, Address, bigint, string, Hex]
     const memo = JSON.parse(memoText)
     for (const patch of [
       { count: 9 }, { mode: 'curve' }, { quantities: null }, { quantities: [7, -1, 4] },
       { quantities: [6, 1, 3] }, { quantities: [200, 0, 1], count: 201 }, { schema: 'metalog.entry.v3' },
     ]) {
-      const data = encodeFunctionData({ abi: DEFIFA_ABI.JBMultiTerminal, functionName: 'pay', args: [
-        projectId, token, amount, beneficiary, minimum, JSON.stringify({ ...memo, ...patch }), metadata,
-      ] })
-      await expect(verifyDefifaTransactionReceipt({ ...tx, data }, mintReceipt([1, 1, 1, 1, 1, 1, 1, 3, 3, 3]))).rejects.toThrow()
+      expect(() => verifyRecordedEntry(market, deploymentForChain(chainId).implementation, account, amount,
+        decodeEntryMemo(JSON.stringify({ ...memo, ...patch }), metadata), metadata, mintReceipt([1, 1, 1, 1, 1, 1, 1, 3, 3, 3]))).toThrow()
     }
   })
 
@@ -599,23 +573,6 @@ describe('Defifa market reads and curve entry', () => {
     expect(() => tx.verifyReceipt!({ ...receipt, logs: receipt.logs.slice(1) })).toThrow('complete reviewed')
     expect(() => tx.verifyReceipt!({ ...receipt, status: 'reverted' })).toThrow('complete reviewed')
   })
-
-  it('reconstructs recovery checks from exact calldata and refuses changed value, target or partial mint effects', async () => {
-    now = definition.entryOpensAt + 1
-    const market = await readMarket(chainId, '7')
-    const coefficients = coefficientsFromMoments(0, 50)
-    const allocation = allocatePositions(coefficients, ranges, 3)
-    const tx = await prepareEntry(market, allocation, account, coefficients)
-    const ids = allocation.tierIds.flatMap((id, index) => Array<number>(allocation.quantities[index]).fill(id))
-    const receipt = mintReceipt(ids)
-    phase = 3
-    now = definition.entryClosesAt + 1
-    await expect(verifyDefifaTransactionReceipt(tx, receipt)).resolves.toBeUndefined()
-    await expect(verifyDefifaTransactionReceipt({ ...tx, value: tx.value + 1n }, receipt)).rejects.toThrow('amount or beneficiary')
-    await expect(verifyDefifaTransactionReceipt({ ...tx, to: account }, receipt)).rejects.toThrow('unsupported target')
-    await expect(verifyDefifaTransactionReceipt(tx, mintReceipt(ids.slice(1)))).rejects.toThrow('complete reviewed')
-    expect(mocks.getBlock).toHaveBeenCalledWith({ blockNumber: 100n })
-  })
 })
 
 it('extracts only confirmed canonical launch events for navigation', () => {
@@ -631,7 +588,7 @@ it('extracts only confirmed canonical launch events for navigation', () => {
   expect(() => createdMarketId({ ...receipt, logs: [{ ...receipt.logs[0], address: account as Address }] })).toThrow('confirmed Defifa market')
 })
 
-it.each([{ name: 'uniform', definition }, { name: 'custom', definition: customDefinition }])('recovers $name creation from immutable calldata and rejects a changed creator or stored definition', async ({ definition }) => {
+it.each([{ name: 'uniform', definition }, { name: 'custom', definition: customDefinition }])('checks $name creation receipts and rejects a changed creator or stored definition', async ({ definition }) => {
   uri = encodeMarketDefinition(definition)
   observedRanges = marketRanges(definition)
   const tx = await prepareCreateMarket(definition, chainId, account)
@@ -643,8 +600,9 @@ it.each([{ name: 'uniform', definition }, { name: 'custom', definition: customDe
     } }),
     data: encodeAbiParameters([{ type: 'address' }, { type: 'address' }], [zeroAddress, account]),
   }] } as unknown as TransactionReceipt
-  await expect(verifyDefifaTransactionReceipt(tx, receipt)).resolves.toBeUndefined()
-  await expect(verifyDefifaTransactionReceipt({ ...tx, account: hook }, receipt)).rejects.toThrow('creator')
+  await expect(tx.verifyReceipt!(receipt)).resolves.toBeUndefined()
+  const otherCaller = encodeAbiParameters([{ type: 'address' }, { type: 'address' }], [zeroAddress, hook])
+  await expect(tx.verifyReceipt!({ ...receipt, logs: [{ ...receipt.logs[0], data: otherCaller }] })).rejects.toThrow('creator')
   uri = encodeMarketDefinition({ ...definition, source: 'A different source' })
-  await expect(verifyDefifaTransactionReceipt(tx, receipt)).rejects.toThrow('confirmed metadata URI')
+  await expect(tx.verifyReceipt!(receipt)).rejects.toThrow('confirmed metadata URI')
 })

@@ -1,5 +1,5 @@
 import {
-  decodeFunctionData, encodeAbiParameters, encodeFunctionData, formatEther, getAddress,
+  encodeAbiParameters, encodeFunctionData, formatEther, getAddress,
   parseAbi, parseEventLogs, zeroAddress, type Address, type Hex, type PublicClient, type TransactionReceipt,
 } from 'viem'
 import { allocateManualPositions, allocatePositions, type Allocation } from '../domain/allocation'
@@ -357,51 +357,6 @@ export function verifyRecordedEntry(
   }
   verifyEntryReceipt(market, owner, allocation, receipt)
   return { coefficients, allocation }
-}
-
-/** Recovery rebuilds the effect checks from recorded calldata, without authorizing another send. */
-export async function verifyDefifaTransactionReceipt(
-  request: { chainId: number; account: Address; to: Address; data: Hex; value: bigint },
-  receipt: TransactionReceipt,
-): Promise<void> {
-  const owner = signer(request.account)
-  const client = publicClientForChain(request.chainId)
-  const d = await verifyDefifaDeployment(client, request.chainId, receipt.blockNumber)
-  if (sameAddress(request.to, d.deployer)) {
-    const decoded = decodeFunctionData({ abi: DEFIFA_ABI.DefifaDeployer, data: request.data })
-    if (decoded.functionName !== 'launchGameWith') {
-      const { verifyLifecycleReceipt } = await import('./defifa-lifecycle')
-      return verifyLifecycleReceipt(request, receipt)
-    }
-    const launch = decoded.args?.[0] as { projectUri: string }
-    const published = await loadMarketMetadata(launch.projectUri)
-    const definition = published.definition
-    const expectedData = encodeFunctionData({
-      abi: DEFIFA_ABI.DefifaDeployer, functionName: 'launchGameWith', args: [launchData(definition, request.chainId, published)],
-    })
-    if (expectedData !== request.data) throw new Error('The recorded creation differs from the supported market definition.')
-    return verifyLaunchReceipt(client, request.chainId, owner, published, receipt)
-  }
-  if (!sameAddress(request.to, d.terminal)) {
-    if (request.value !== 0n) throw new Error('The recorded transaction has an unsupported target.')
-    const { verifyLifecycleReceipt } = await import('./defifa-lifecycle')
-    return verifyLifecycleReceipt(request, receipt)
-  }
-  const decoded = decodeFunctionData({ abi: DEFIFA_ABI.JBMultiTerminal, data: request.data })
-  if (decoded.functionName !== 'pay') {
-    const { verifyLifecycleReceipt } = await import('./defifa-lifecycle')
-    return verifyLifecycleReceipt(request, receipt)
-  }
-  const [projectId, token, amount, beneficiary, minimum, memoText, metadata] = decoded.args as
-    readonly [bigint, Address, bigint, Address, bigint, string, Hex]
-  if (!sameAddress(token, NATIVE_TOKEN) || !sameAddress(beneficiary, owner) || amount !== request.value || minimum !== 0n) {
-    throw new Error('The recorded entry amount or beneficiary does not match.')
-  }
-  const memo = decodeEntryMemo(memoText, metadata)
-  const block = await client.getBlock({ blockNumber: receipt.blockNumber })
-  const market = await readMarketAt(client, request.chainId, projectId.toString(), block.number, Number(block.timestamp))
-  await assertEntryRules(client, market)
-  verifyRecordedEntry(market, d.implementation, owner, amount, memo, metadata, receipt)
 }
 
 export async function prepareCreateMarket(
