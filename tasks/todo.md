@@ -175,3 +175,5 @@ Resources: as above, plus scratchpad `sm/BRIEF3.md` and `sm/sdk.md`. Branch `sta
 - [x] Delete the journal, legacy recovery verifier and their tests; port fork integration to sendReviewed
 - [x] Connect from @me.jango/signa
 - [x] Gates, draft PR (no merge)
+
+Review: the hold tests failed on the old module and pass. `npm run check` (174 unit), the browser suite (73 passed, 1 skipped), fork integration on Base Sepolia (5) and the lifecycle fork (17 transactions) pass against the tarball. The lifecycle fork caught one real gap, which is fixed: the run showed confirmed before the action's receipt checks finished, and a click in between was dropped silently. The action now stays disabled until they finish. A lost wallet reply stays held with no hash until the wallet's hash is attached; the hold does not find it by nonce alone. SDK gaps: Defifa owners are 721-only; `useHeldWrites` has no `onSettled`.
