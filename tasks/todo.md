@@ -139,3 +139,22 @@ Resources: `/Users/jango/Documents/jb/v6/evm/AGENTS.md`, `/Users/jango/Documents
 - jango: with 1155, lower the minimum to 0.00001 ETH. The 0.0001 floor and 160-position cap were 721 gas limits (about 47k gas per minted NFT). Measured on a Base Sepolia fork, an 1155 entry costs about 205k base gas plus about 182k per range touched, the same for 13 positions or 1,000,000 (2.80M vs 2.56M on 13 ranges). MIN_NEW_UNIT_PRICE_WEI is now 1e13; MAX_POSITIONS is 1,000,000,000 per jango (a stake-typo bound, 10,000 ETH at the floor; one range still caps at its 999,999,999 supply). MAX_RECORDED_POSITIONS is gone, since no 721 entries are verified anymore.
 - Found along the way: the SDK's gasWithHeadroom doubles the estimate, so any entry across more than about 42 ranges (61-range entry is about 11.3M) asked for more than the 2^24 per-transaction cap and could not be sent. The doubled limit is now clamped at TRANSACTION_GAS_CAP when the estimate fits. Ponytail note: the clamp belongs in the SDK's gasWithHeadroom.
 - Gates: 224 unit tests, the browser suite, and the fork gas test (count-independence; the scaled 61-range estimate fits the cap).
+
+# State machines wave (2026-11-09)
+
+Resources: `/Users/jango/Documents/jb/v6/evm/AGENTS.md`, `/Users/jango/Documents/jb/v6/evm/workflow/ponytail/SKILL.md`, `/Users/jango/Documents/jb/v6/evm/docs/PLAN_REFINEMENT.md`; local `AGENTS.md`, `README.md`. Discovery: scratchpad `sm/metalog.md`. Branch `state-machines-2026-11-09` from origin/main in `.worktrees/sm-metalog`.
+
+## Plan refinement
+- **Objective:** Make metalog's implicit action and feed machines explicit and fix their verified bugs (metalog-3 status copy during a send, metalog-4 activity reset by the poll) without changing transaction authority, storage formats or receipt checks.
+- **System fit:** Transactions provider stays the one send/recovery owner (SDK adoption later replaces it, metalog-1/2/17). Components keep calling prepare then `execute*`; one hook owns the prepare-to-handoff phase. Activity keeps its API and cursors; only its query identity changes.
+- **Reuse and simplicity:** One `usePreparedWrite` hook replaces three copies (refactor commit, then fix commit). Activity reuses React Query's own refetch of loaded pages. No new dependency, no SDK upgrade.
+- **Evidence and unknowns:** Code reading verified both bugs; regression tests prove them on the old code first. Lifecycle fork suite needs Anvil and upstream Center RPC; run it if reachable, else report.
+- **Verification:** New browser regression tests (activity keeps pages across a market refresh; no preparation copy while the provider is reviewing), `npm run check`, `npm run test:browser`, lifecycle fork when reachable.
+- **Resource budget:** One worktree, cloned node_modules, suites one at a time. Replan if the hook cannot keep CreateMarket's form-error behavior identical.
+
+- [x] UNION metalog-3: `usePreparedWrite` for ForecastEditor, MarketLifecycle, CreateMarket
+- [x] FIX metalog-3: preparation copy ends at the hand-off (test first)
+- [x] FIX metalog-4: activity feed keeps loaded pages across snapshots (test first)
+- [x] Gates, PR (no merge)
+
+Review: both regression tests failed on the old code (lifecycle fork: "Preparing market…" shown with the review dialog open; activity.spec: older page gone after a market refresh) and pass after the fixes. metalog-1/2/17 wait for SDK 6.x adoption (writeHold, useReviewedRun); metalog-2 has two verified recovery dead ends that adoption closes.
