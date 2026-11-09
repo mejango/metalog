@@ -43,7 +43,7 @@ export function ForecastEditor({ definition, market, current = true, onSubmitted
   const [referenceCurve, setReferenceCurve] = useState(() => coefficientsFromMoments(0, 2))
   const { address, isSigna, connect } = useWallet()
   const transactions = useTransactions()
-  const { preparing: submitting, error, setError, run } = usePreparedWrite()
+  const { preparing: submitting, running, error, setError, run } = usePreparedWrite()
   const manual = mode === 'ranges'
   const budget = mode === 'coefficients' ? budgets.coefficients : budgets.moments
   const curve = useMemo(() => {
@@ -215,7 +215,7 @@ export function ForecastEditor({ definition, market, current = true, onSubmitted
       </div>}
       {model.error && !stakeError && <p id="forecast-error" className="error" role="alert">{model.error}</p>}
       <div className="actions ticket-actions">
-        {market && <button className="primary" disabled={!current || !model.preview || Boolean(closed) || submitting || transactions.busy} onClick={submit}>
+        {market && <button className="primary" disabled={!current || !model.preview || Boolean(closed) || running || transactions.busy} onClick={submit}>
           {submitting ? 'Preparing entry…' : !address ? 'Connect to enter' : isSigna ? 'Use external wallet to enter' : 'Review entry'}
         </button>}
         <button className="quiet" disabled={!model.preview} onClick={() => model.preview && downloadJson(model.preview, 'metalog-forecast.json')}>Download draft</button>

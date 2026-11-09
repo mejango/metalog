@@ -30,9 +30,13 @@ export function useTransactions() {
   return value
 }
 
-/** Prepare a write, hand it to the transaction runner, then apply its confirmed receipt. One run at a time; `preparing` ends at the hand-off. */
+/**
+ * Prepare a write, hand it to the transaction runner, then apply its confirmed receipt. One run at a time: `running` lasts
+ * until the receipt's effects are applied, `preparing` (the copy) ends at the hand-off.
+ */
 export function usePreparedWrite() {
   const [preparing, setPreparing] = useState(false)
+  const [running, setRunning] = useState(false)
   const [error, setError] = useState('')
   const active = useRef(false)
   const run = useCallback(async <T,>(prepare: () => Promise<T>, send: (prepared: T) => Promise<TransactionReceipt | null>,
@@ -41,15 +45,16 @@ export function usePreparedWrite() {
     active.current = true
     setError('')
     setPreparing(true)
+    setRunning(true)
     try {
       const prepared = await prepare()
       setPreparing(false)
       const receipt = await send(prepared)
       if (receipt) await settle(receipt)
     } catch (cause) { setError(cause instanceof Error ? cause.message : fallback) }
-    finally { active.current = false; setPreparing(false) }
+    finally { active.current = false; setPreparing(false); setRunning(false) }
   }, [])
-  return { preparing, error, setError, run }
+  return { preparing, running, error, setError, run }
 }
 
 export const EXTERNAL_WALLET_LINE = 'Defifa transactions need an external wallet. Signa currently provides sign-in only.'

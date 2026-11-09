@@ -56,7 +56,7 @@ export function CreateMarket({ now }: { now: number }) {
   const [price, setPrice] = useState('0.001')
   const [chainId, setChainId] = useState(8453)
   const isTestnet = SUPPORTED_CHAINS.some(chain => chain.id === chainId && 'testnet' in chain && chain.testnet)
-  const { preparing: busy, error, setError, run } = usePreparedWrite()
+  const { preparing, running, error, setError, run } = usePreparedWrite()
   const [showValidation, setShowValidation] = useState(false)
   const router = useRouter()
   const wallet = useWallet()
@@ -187,7 +187,7 @@ export function CreateMarket({ now }: { now: number }) {
   }
   async function create(event: React.FormEvent) {
     event.preventDefault()
-    if (busy || transactions.busy) return
+    if (running || transactions.busy) return
     setShowValidation(true)
     setError('')
     if (!draft.definition) return
@@ -289,7 +289,7 @@ export function CreateMarket({ now }: { now: number }) {
       {isTestnet && <div className="field"><div><button type="button" onClick={applyShortSchedule}>Use short test schedule</button></div><small>{testSchedule ? <>Opens in 2–3 minutes, with 10 minutes for entry and {(testSchedule.resolvesAt - testSchedule.entryClosesAt) / 60} minutes for observation.</> : 'Preserves the observation duration entered above.'} Results still take at least 1 day to settle.</small>{scheduleError && <small className="error" role="alert">{scheduleError}</small>}</div>}
       <p className="hint">Payouts follow the ratified result. Entry can be refunded while minting is open.</p>
       <div className="actions">
-        <button type="submit" className="primary" disabled={busy || transactions.busy || Boolean(rangeError || delegateDraft.error)}>{busy ? 'Preparing market…' : !wallet.address ? 'Connect to create' : wallet.isSigna ? 'Use external wallet to create' : 'Review market'}</button>
+        <button type="submit" className="primary" disabled={running || transactions.busy || Boolean(rangeError || delegateDraft.error)}>{preparing ? 'Preparing market…' : !wallet.address ? 'Connect to create' : wallet.isSigna ? 'Use external wallet to create' : 'Review market'}</button>
         <button type="button" disabled={!draft.definition} onClick={() => draft.definition && downloadJson(draft.definition, 'metalog-market.json')}>Download definition</button>
       </div>
       {(error || (showValidation && draft.error && draft.error !== rangeError && draft.error !== delegateDraft.error && draft.error !== priceError)) && <p className="error" role="alert" style={{ marginTop: 14 }}>{error || draft.error}</p>}

@@ -42,7 +42,7 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   // Preset markets can read their own result once observation ends; proposing it is one click.
   const observed = useLiveOutcome(market.definition, market.stage === 'settlement' ? 'final' : null)
   const observedRange = observed?.final ? binForOutcome(market.ranges, observed.value) : null
-  const { preparing, error: actionError, run } = usePreparedWrite()
+  const { preparing, running, error: actionError, run } = usePreparedWrite()
   const walletKey = address?.toLowerCase() ?? ''
   const selected = selections[walletKey] ?? {}
   const burning = positions.flatMap(position => {
@@ -51,7 +51,7 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   })
   const burnCount = burning.reduce((sum, position) => sum + position.count, 0)
   const matchingWallet = !!address && lifecycle.account?.toLowerCase() === walletKey
-  const busy = preparing || transactions.busy
+  const busy = running || transactions.busy
   const canAct = current && matchingWallet && !isSigna && !busy
   const explorer = chainForId(market.chainId).blockExplorers.default.url
   const scoreDraft = useMemo(() => {
