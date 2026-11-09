@@ -47,9 +47,10 @@ export function Activity({ market, active }: { market: MarketSnapshot; active: b
     observer.observe(end.current)
     return () => observer.disconnect()
   }, [])
+  // Only once the reread is done: a page fetch would cancel it.
   useEffect(() => {
-    if (active && near && hasNextPage && !isFetching && !query.error) void fetchNextPage()
-  }, [active, near, hasNextPage, isFetching, fetchNextPage, query.error])
+    if (active && near && hasNextPage && readAt === market.blockNumber && !isFetching && !query.error) void fetchNextPage()
+  }, [active, near, hasNextPage, readAt, market.blockNumber, isFetching, fetchNextPage, query.error])
   return <section aria-labelledby="activity-heading" className="activity">
     <h3 id="activity-heading">Activity</h3>
     {query.error && <p className="error" role="alert">{query.error.message} <button type="button" onClick={() => void (query.isFetchNextPageError ? fetchNextPage() : refetch())}>Retry</button></p>}
