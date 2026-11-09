@@ -36,7 +36,7 @@ export function useTransactions() {
   return value
 }
 
-/** Prepare a write, hand it to the transaction runner, then apply its confirmed receipt. One run at a time. */
+/** Prepare a write, hand it to the transaction runner, then apply its confirmed receipt. One run at a time; `preparing` ends at the hand-off. */
 export function usePreparedWrite() {
   const [preparing, setPreparing] = useState(false)
   const [error, setError] = useState('')
@@ -48,7 +48,9 @@ export function usePreparedWrite() {
     setError('')
     setPreparing(true)
     try {
-      const receipt = await send(await prepare())
+      const prepared = await prepare()
+      setPreparing(false)
+      const receipt = await send(prepared)
       if (receipt) await settle(receipt)
     } catch (cause) { setError(cause instanceof Error ? cause.message : fallback) }
     finally { active.current = false; setPreparing(false) }
