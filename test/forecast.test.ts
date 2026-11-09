@@ -105,7 +105,7 @@ describe('forecast data and payment boundary', () => {
     const response = await POST(new Request('http://localhost/api/preview', { method: 'POST', body: JSON.stringify(payload) }))
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual(forecastPreview(payload))
-    for (const body of ['null', '{}', '{', JSON.stringify({ ...payload, positions: 1_000_001 })]) {
+    for (const body of ['null', '{}', '{', JSON.stringify({ ...payload, positions: 1_000_000_001 })]) {
       expect((await POST(new Request('http://localhost/api/preview', { method: 'POST', body }))).status).toBe(400)
     }
     expect((await POST(new Request('http://localhost/api/preview', { method: 'POST', body: ' '.repeat(32_769) }))).status).toBe(413)

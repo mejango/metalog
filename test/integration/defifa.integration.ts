@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parseAbi, zeroAddress, type Address, type TransactionReceipt } from 'viem'
-import { allocateManualPositions, MAX_POSITIONS } from '../../src/domain/allocation'
+import { allocateManualPositions } from '../../src/domain/allocation'
 import { coefficientsFromMoments } from '../../src/domain/distribution'
 import { MIN_NEW_UNIT_PRICE_WEI, validateMarket, type MarketDefinition } from '../../src/domain/market'
 import { MAX_RANGE_COUNT } from '../../src/domain/ranges'
@@ -251,11 +251,13 @@ describe.each(forkChainIds)('canonical Defifa contracts on local chain %i fork',
     const creation = await execute(await prepareCreateMarket(wide, chainId, fork.accounts[3]))
     await fork.advanceTo(wide.entryOpensAt + 1)
     const game = await readMarket(chainId, createdMarketId(creation))
+    // 100M positions (1,000 ETH at the floor); the 1e9 cap would need more than a fork account holds.
+    const LARGE = 100_000_000
     const spread = (total: number) => game.ranges.map((_, index) => Math.floor(total / game.ranges.length) + (index < total % game.ranges.length ? 1 : 0))
     const small = await execute(await prepareEntry(game, allocateManualPositions(coefficients, game.ranges, spread(game.ranges.length)), fork.accounts[3], coefficients))
     const large = await execute(await prepareEntry(await readMarket(chainId, game.projectId),
-      allocateManualPositions(coefficients, game.ranges, spread(MAX_POSITIONS)), fork.accounts[4], coefficients))
-    console.info('1155 entry gas', { ranges: game.ranges.length, onePerRange: small.gasUsed, maximum: large.gasUsed, positions: MAX_POSITIONS })
+      allocateManualPositions(coefficients, game.ranges, spread(LARGE)), fork.accounts[4], coefficients))
+    console.info('1155 entry gas', { ranges: game.ranges.length, onePerRange: small.gasUsed, maximum: large.gasUsed, positions: LARGE })
     // ERC-1155 mints one balance per range, so gas does not grow with the position count.
     expect(large.gasUsed).toBeLessThan(small.gasUsed * 12n / 10n)
     // Gas grows per range (about 182k each), so scaling the whole entry to the most ranges overestimates it;

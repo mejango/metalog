@@ -2,8 +2,9 @@ import { cdf, validateCoefficients, type Coefficients } from './distribution'
 import { MAX_RANGE_COUNT, type RangeBin } from './ranges'
 
 // ERC-1155 positions mint one balance per range, so entry gas does not grow with the count (measured on a
-// Base Sepolia fork, see the integration suite). The cap only bounds a mistyped stake; 10 ETH at the minimum price.
-export const MAX_POSITIONS = 1_000_000
+// Base Sepolia fork, see the integration suite). The cap only bounds a mistyped stake; 10,000 ETH at the minimum price,
+// and one range's supply (999,999,999) still bounds what a single range can take.
+export const MAX_POSITIONS = 1_000_000_000
 
 export type Allocation = {
   mode: 'curve' | 'manual'
