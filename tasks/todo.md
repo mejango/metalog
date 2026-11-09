@@ -133,3 +133,9 @@ Resources: `/Users/jango/Documents/jb/v6/evm/AGENTS.md`, `/Users/jango/Documents
 - Bendystraw (keyless, server only): Activity is back (mints + cash-out events), voter holders, and market discovery beside `METALOG_MARKETS`. The paged entry-history scan is deleted; one receipt is still verified on open.
 - 1.0.2 (721) games no longer load here.
 - Evidence: 222 unit, 75 browser (1 skipped), fork integration on Base Sepolia (create, refund, transfer, delegate, propose, attest, revoke, queue, ratify, claim, no-contest refund, custom ranges), and the browser lifecycle on the same fork, 16 transactions. The fork browser test had not run since the tab redesign; its locators (tabpanel role, tab switching, nested summaries) were fixed along the way. Production shows these after deploy; no 1155 game exists yet.
+
+## Lower price floor on 1155 (2026-11-09)
+
+- jango: with 1155, lower the minimum to 0.00001 ETH. The 0.0001 floor and 160-position cap were 721 gas limits (about 47k gas per minted NFT). Measured on a Base Sepolia fork, an 1155 entry costs about 205k base gas plus about 182k per range touched, the same for 13 positions or 1,000,000 (2.80M vs 2.56M on 13 ranges). MIN_NEW_UNIT_PRICE_WEI is now 1e13; MAX_POSITIONS is 1,000,000 (a stake-typo bound, 10 ETH at the floor). MAX_RECORDED_POSITIONS is gone, since no 721 entries are verified anymore.
+- Found along the way: the SDK's gasWithHeadroom doubles the estimate, so any entry across more than about 42 ranges (61-range entry is about 11.3M) asked for more than the 2^24 per-transaction cap and could not be sent. The doubled limit is now clamped at TRANSACTION_GAS_CAP when the estimate fits. Ponytail note: the clamp belongs in the SDK's gasWithHeadroom.
+- Gates: 224 unit tests, the browser suite, and the fork gas test (count-independence; the scaled 61-range estimate fits the cap).

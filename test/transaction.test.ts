@@ -3,7 +3,7 @@ import { encodeFunctionData, type Address, type Hex, type TransactionReceipt } f
 import { nativeCreationRequest } from './fixtures/transaction-requests'
 import { DEFIFA_ABI, deploymentForChain } from '../src/lib/defifa-deployment'
 import {
-  executeTransaction, readPendingTransaction, recoverTransaction, TRANSACTION_STORAGE_KEY,
+  executeTransaction, readPendingTransaction, recoverTransaction, TRANSACTION_GAS_CAP, TRANSACTION_STORAGE_KEY,
   creationAttemptStorage, marketAttemptStorage, readPendingAttempts, pendingBlocksMarket, pendingBlocksNewCreation, TRANSACTION_JOURNAL_STORAGE_KEY, selectedTransactionStatus,
   type PreparedTransaction, type TransactionRuntime, type WalletIdentity,
 } from '../src/lib/transaction'
@@ -32,6 +32,13 @@ function harness() {
 }
 
 describe('reviewed transaction boundary', () => {
+  it('clamps doubled gas headroom to the per-transaction cap for a wide entry that still fits it', async () => {
+    const h = harness()
+    h.client.estimateGas.mockResolvedValueOnce(11_300_000n)
+    h.runtime.send = vi.fn(async sent => { expect(sent.gas).toBe(TRANSACTION_GAS_CAP); return hash })
+    await executeTransaction({ ...request, verifyReceipt: vi.fn() }, h.runtime)
+    expect(h.runtime.send).toHaveBeenCalledOnce()
+  })
   it('saves uncertainty before invoking the wallet and checks exact receipt effects', async () => {
     const h = harness()
     h.runtime.send = vi.fn(async sent => {

@@ -8,7 +8,7 @@ import { POST } from '../src/app/api/preview/route'
 describe('forecast data and payment boundary', () => {
   it('pays for integer positions only and preserves the unspent remainder', () => {
     expect(positionsForBudget('0.0001004', '1000000000000')).toEqual({ count: 100, valueWei: 100000000000000n, remainderWei: 400000000000n })
-    for (const value of ['0', '-1', 'Infinity', '1e-3', '0.0000000000000000001', '', '.', '0.001']) {
+    for (const value of ['0', '-1', 'Infinity', '1e-3', '0.0000000000000000001', '', '.', '1000000.000001']) {
       expect(() => positionsForBudget(value, '1000000000000')).toThrow()
     }
     expect(positionsForBudget('.0001', '1000000000000').count).toBe(100)
@@ -105,7 +105,7 @@ describe('forecast data and payment boundary', () => {
     const response = await POST(new Request('http://localhost/api/preview', { method: 'POST', body: JSON.stringify(payload) }))
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual(forecastPreview(payload))
-    for (const body of ['null', '{}', '{', JSON.stringify({ ...payload, positions: 1000 })]) {
+    for (const body of ['null', '{}', '{', JSON.stringify({ ...payload, positions: 1_000_001 })]) {
       expect((await POST(new Request('http://localhost/api/preview', { method: 'POST', body }))).status).toBe(400)
     }
     expect((await POST(new Request('http://localhost/api/preview', { method: 'POST', body: ' '.repeat(32_769) }))).status).toBe(413)

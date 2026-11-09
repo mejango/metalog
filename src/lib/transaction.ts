@@ -9,6 +9,9 @@ import {
 import { chainForId } from './wallet'
 import { classifyTransactionScope, isMarketTransactionScope, transactionMatchesMarketScope, type MarketTransactionScope } from './transaction-scope'
 
+/** EIP-7825: no transaction may carry more than 2^24 gas. A wide 1155 entry estimates about 11M on Base. */
+export const TRANSACTION_GAS_CAP = 2n ** 24n
+
 /** A product adapter owns calldata, current-state checks and its receipt effects. */
 export type PreparedTransaction = {
   chainId: number
@@ -262,7 +265,10 @@ export async function executeTransaction(input: PreparedTransaction, runtime: Tr
   if (runtime.client.chain?.id !== request.chainId) throw new Error('The transaction reader is on another network.')
   const expected = { ...before, chainId: request.chainId }
   runtime.onStatus('simulating')
-  const gas = gasWithHeadroom(await runtime.client.estimateGas({ account: request.account, to: request.to, data: request.data, value: request.value }))
+  const estimate = await runtime.client.estimateGas({ account: request.account, to: request.to, data: request.data, value: request.value })
+  // ponytail: doubled headroom past the protocol's per-transaction cap can never be sent; move this clamp into the SDK's gasWithHeadroom.
+  const doubled = gasWithHeadroom(estimate)
+  const gas = estimate <= TRANSACTION_GAS_CAP && doubled > TRANSACTION_GAS_CAP ? TRANSACTION_GAS_CAP : doubled
   let record: PendingTransaction | undefined
   const hash = await submitReviewedContractWrite({
     request,

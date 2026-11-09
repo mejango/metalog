@@ -90,7 +90,7 @@ test('manual position buckets update chart, stake and export and recover from in
     await expect(page.getByRole('button', { name: 'Download draft' })).toBeDisabled()
     for (const name of ['Simple', 'Expressive', 'By range']) await expect(page.getByRole('button', { name, exact: true })).toBeEnabled()
   }
-  await counts.first().fill('161')
+  await counts.first().fill('1000001')
   await expect(page.getByRole('button', { name: 'Download draft' })).toBeDisabled()
   for (const input of await counts.all()) await input.fill('0')
   await expect(page.getByRole('button', { name: 'Download draft' })).toBeDisabled()
@@ -151,10 +151,10 @@ test('example curve, decimals, raw validation and independent stake errors', asy
   const middle = page.getByRole('textbox', { name: 'a4 | Middle spread', exact: true })
   const original = await scale.inputValue()
   const stake = page.getByRole('textbox', { name: 'Buy (ETH)' })
-  await stake.fill('1000')
+  await stake.fill('1000000000')
   // Stake errors sit on the Buy field itself.
   await expect(stake).toHaveAttribute('aria-invalid', 'true')
-  await expect(page.locator('#stake-error')).toContainText('Use at most 160 positions per entry')
+  await expect(page.locator('#stake-error')).toContainText('Use at most 1000000 positions per entry')
   await expect(page.locator('label').filter({ has: stake }).getByRole('alert')).toBeVisible()
   await stake.fill('.')
   await expect(page.getByRole('img', { name: 'Your probability distribution', exact: true })).toBeVisible()

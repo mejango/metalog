@@ -2,9 +2,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parseAbi, zeroAddress, type Address, type TransactionReceipt } from 'viem'
-import { allocateManualPositions } from '../../src/domain/allocation'
+import { allocateManualPositions, MAX_POSITIONS } from '../../src/domain/allocation'
 import { coefficientsFromMoments } from '../../src/domain/distribution'
-import { validateMarket, type MarketDefinition } from '../../src/domain/market'
+import { MIN_NEW_UNIT_PRICE_WEI, validateMarket, type MarketDefinition } from '../../src/domain/market'
+import { MAX_RANGE_COUNT } from '../../src/domain/ranges'
 import {
   createdMarketId, prepareCreateMarket, prepareEntry, readMarket, receiptMoves, verifyDefifaTransactionReceipt,
   type MarketSnapshot,
@@ -12,7 +13,7 @@ import {
 import { verifyDefifaDeployment } from '../../src/lib/defifa-deployment'
 import { prepareLifecycleAction, readCashOutQuote, readLifecycle } from '../../src/lib/defifa-lifecycle'
 import {
-  executeTransaction, readPendingTransaction, recoverTransaction,
+  executeTransaction, readPendingTransaction, recoverTransaction, TRANSACTION_GAS_CAP,
   type PreparedTransaction, type TransactionRuntime,
 } from '../../src/lib/transaction'
 import { forkChainIds, startFork, type LocalFork } from './fork'
@@ -241,5 +242,24 @@ describe.each(forkChainIds)('canonical Defifa contracts on local chain %i fork',
     lifecycle = await readLifecycle(chainId, timeoutMarket.projectId, fork.accounts[3])
     expect(lifecycle.positions).toEqual([])
     expect(lifecycle.market.potWei).toBe('0')
+  })
+
+  it.skipIf(smokeOnly)('mints the largest entry at the minimum price for about the same gas as one position per range', async () => {
+    const now = Number((await fork.client.getBlock()).timestamp)
+    const wide = validateMarket({ ...definition, entryOpensAt: now + 120, entryClosesAt: now + 600, resolvesAt: now + 900,
+      rangeCount: 13, unitPriceWei: MIN_NEW_UNIT_PRICE_WEI.toString() })
+    const creation = await execute(await prepareCreateMarket(wide, chainId, fork.accounts[3]))
+    await fork.advanceTo(wide.entryOpensAt + 1)
+    const game = await readMarket(chainId, createdMarketId(creation))
+    const spread = (total: number) => game.ranges.map((_, index) => Math.floor(total / game.ranges.length) + (index < total % game.ranges.length ? 1 : 0))
+    const small = await execute(await prepareEntry(game, allocateManualPositions(coefficients, game.ranges, spread(game.ranges.length)), fork.accounts[3], coefficients))
+    const large = await execute(await prepareEntry(await readMarket(chainId, game.projectId),
+      allocateManualPositions(coefficients, game.ranges, spread(MAX_POSITIONS)), fork.accounts[4], coefficients))
+    console.info('1155 entry gas', { ranges: game.ranges.length, onePerRange: small.gasUsed, maximum: large.gasUsed, positions: MAX_POSITIONS })
+    // ERC-1155 mints one balance per range, so gas does not grow with the position count.
+    expect(large.gasUsed).toBeLessThan(small.gasUsed * 12n / 10n)
+    // Gas grows per range (about 182k each), so scaling the whole entry to the most ranges overestimates it;
+    // it must still fit the 2^24 per-transaction cap the sent limit is clamped to. (A 61-range fork read times out cold.)
+    expect(large.gasUsed * BigInt(MAX_RANGE_COUNT) / 13n).toBeLessThan(TRANSACTION_GAS_CAP)
   })
 })

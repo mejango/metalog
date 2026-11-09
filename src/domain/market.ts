@@ -6,7 +6,7 @@ type RangeConfiguration =
   | { rangeBoundaries: number[]; rangeCount?: never; rangeWidth?: never }
 
 /** Smallest price per position a new market may set. Existing games keep whatever price they launched with. */
-export const MIN_NEW_UNIT_PRICE_WEI = 10n ** 14n
+export const MIN_NEW_UNIT_PRICE_WEI = 10n ** 13n
 
 export type MarketDefinition = {
   schemaVersion: 1

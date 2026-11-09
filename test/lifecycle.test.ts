@@ -161,7 +161,7 @@ describe('native lifecycle preparation', () => {
     await expect(tx.reverify!()).rejects.toThrow('phase changed')
     await expect(prepareLifecycleAction(market, { kind: 'transfer', tierId: 1, count: 2, to: other }, account)).rejects.toThrow('no longer holds')
     await expect(prepareLifecycleAction(market, { kind: 'cash-out', positions: [{ tierId: 1, count: 1 }, { tierId: 1, count: 1 }], minReclaimedWei: '0' }, account)).rejects.toThrow('unique')
-    await expect(prepareLifecycleAction(market, { kind: 'cash-out', positions: [{ tierId: 1, count: 161 }], minReclaimedWei: '0' }, account)).rejects.toThrow('160')
+    await expect(prepareLifecycleAction(market, { kind: 'cash-out', positions: [{ tierId: 1, count: 1_000_001 }], minReclaimedWei: '0' }, account)).rejects.toThrow('1000000')
     await expect(prepareLifecycleAction(market, { kind: 'cash-out', positions: [{ tierId: 4, count: 1 }], minReclaimedWei: '0' }, account)).rejects.toThrow('unique')
   })
 

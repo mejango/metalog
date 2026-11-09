@@ -2,7 +2,7 @@ import {
   decodeFunctionData, encodeAbiParameters, encodeFunctionData, formatEther, getAddress,
   parseAbi, parseEventLogs, zeroAddress, type Address, type Hex, type PublicClient, type TransactionReceipt,
 } from 'viem'
-import { allocateManualPositions, allocatePositions, MAX_RECORDED_POSITIONS, type Allocation } from '../domain/allocation'
+import { allocateManualPositions, allocatePositions, type Allocation } from '../domain/allocation'
 import { validateCoefficients, type Coefficients } from '../domain/distribution'
 import {
   encodeMarketDefinition, marketRanges, SCORECARD_TIMEOUT_BUFFER_SECONDS, validateMarket,
@@ -346,8 +346,8 @@ export function verifyRecordedEntry(
 ): { coefficients: Coefficients; allocation: Allocation } {
   const coefficients = memo.coefficients
   const allocation = memo.schema === 'metalog.entry.v1'
-    ? allocatePositions(coefficients, market.ranges, memo.count, MAX_RECORDED_POSITIONS)
-    : allocateManualPositions(coefficients, market.ranges, memo.quantities as number[], MAX_RECORDED_POSITIONS)
+    ? allocatePositions(coefficients, market.ranges, memo.count)
+    : allocateManualPositions(coefficients, market.ranges, memo.quantities as number[])
   if (memo.count !== allocation.count) throw new Error('The recorded position total does not match the position counts.')
   if (amount !== BigInt(market.definition.unitPriceWei) * BigInt(allocation.count)) {
     throw new Error('The recorded entry does not pay the exact position price.')

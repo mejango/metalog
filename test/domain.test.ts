@@ -510,12 +510,12 @@ describe('Range editor redistribution', () => {
 })
 
 describe('position caps', () => {
-  it('limits new entries to the gas-safe cap but still verifies larger recorded entries', async () => {
-    const { allocatePositions, MAX_POSITIONS, MAX_RECORDED_POSITIONS } = await import('../src/domain/allocation')
+  it('bounds an entry at the stake-typo cap', async () => {
+    const { allocatePositions, MAX_POSITIONS } = await import('../src/domain/allocation')
     const { marketRanges } = await import('../src/domain/market')
     const { EXAMPLE_MARKET } = await import('../src/lib/example')
     const ranges = marketRanges(EXAMPLE_MARKET)
     expect(() => allocatePositions([0, 1, 0, 0, 0, 0], ranges, MAX_POSITIONS + 1)).toThrow(`1 to ${MAX_POSITIONS}`)
-    expect(allocatePositions([0, 1, 0, 0, 0, 0], ranges, 200, MAX_RECORDED_POSITIONS).count).toBe(200)
+    expect(allocatePositions([0, 1, 0, 0, 0, 0], ranges, MAX_POSITIONS).count).toBe(MAX_POSITIONS)
   })
 })

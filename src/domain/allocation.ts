@@ -1,11 +1,9 @@
 import { cdf, validateCoefficients, type Coefficients } from './distribution'
 import { MAX_RANGE_COUNT, type RangeBin } from './ranges'
 
-// Measured on a Base Sepolia fork: ~250k + ~47k gas per position. Wallet sends double the estimate, and
-// Base caps a transaction at 2^24 gas, so 160 positions (~8M estimated, ~16M sent) is the largest safe entry.
-export const MAX_POSITIONS = 160
-/** Recorded entries made before the cap was lowered stay verifiable; this matches the 14,000-character metadata audit limit. */
-export const MAX_RECORDED_POSITIONS = 213
+// ERC-1155 positions mint one balance per range, so entry gas does not grow with the count (measured on a
+// Base Sepolia fork, see the integration suite). The cap only bounds a mistyped stake; 10 ETH at the minimum price.
+export const MAX_POSITIONS = 1_000_000
 
 export type Allocation = {
   mode: 'curve' | 'manual'
