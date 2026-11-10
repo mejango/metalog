@@ -118,8 +118,14 @@ export function Transactions({ children }: PropsWithChildren) {
     setCreated(`/markets/${chainId}/${projectId}`)
   }, [queryClient])
 
+  /** Settlements applied from a hash, by chain and hash: a follow, a hash entry and a view can each report one. */
+  const applied = useRef(new Set<string>())
   const settledHash = useCallback(async (chainId: number, hash: Hex) => {
-    await settled(chainId, await publicClientForChain(chainId).getTransactionReceipt({ hash }))
+    const key = `${chainId}:${hash.toLowerCase()}`
+    if (applied.current.has(key)) return
+    applied.current.add(key)
+    try { await settled(chainId, await publicClientForChain(chainId).getTransactionReceipt({ hash })) }
+    catch (cause) { applied.current.delete(key); throw cause }
   }, [settled])
 
   /** A form's write is in review or sending: another form's handoff is refused, not left behind a replaced review. */
@@ -186,6 +192,11 @@ function HeldOnChain({ chainId, account, onSettled, running, shown }: {
     }
     return () => stop.abort()
   }, [keys, running, account, chainId, client, onSettled])
+  // A write that settled before this list followed it (mined while away): its view still carries the success.
+  const successes = items.flatMap(({ view }) => view.settled && 'hash' in view.settled && view.settled.result === 'success' ? [view.settled.hash] : []).join('|')
+  useEffect(() => {
+    for (const hash of successes ? successes.split('|') as Hex[] : []) void onSettled(chainId, hash).catch(() => undefined)
+  }, [successes, chainId, onSettled])
   // As revnet lists them: every state the hold shows; the open run's write is in its own card.
   const listed = items.filter(item => !(item.view.state && item.view.state.status !== 'clear' && item.view.state.record.id === shown))
   // A lost wallet reply, the open run's too: the hold settles it from the hash the wallet shows.

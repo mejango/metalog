@@ -3,9 +3,11 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { createServer } from 'node:net'
 import { setTimeout as pause } from 'node:timers/promises'
-import { createPublicClient, createTestClient, createWalletClient, http, type Address, type Hex } from 'viem'
+import { concatHex, createPublicClient, createTestClient, createWalletClient, encodeEventTopics, http, numberToHex, type Address, type Hex } from 'viem'
 import { baseSepolia } from 'viem/chains'
 import { createHeldWriteStorage, createWriteHold, openStepHold, writeIntentKey, type WriteHoldClient } from '@bananapus/nana-sdk-core/review'
+import DEFIFA_ABI from '../../src/lib/defifa-abi.json' with { type: 'json' }
+import deploymentPins from '../../src/lib/defifa-deployments.json' with { type: 'json' }
 
 // Anvil's first default account, on a plain local chain with Base Sepolia's ID.
 const account = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266' as Address
@@ -33,10 +35,10 @@ async function startAnvil() {
 type Anvil = Awaited<ReturnType<typeof startAnvil>>
 
 /** A real SDK hold record for `call`, made in memory here and loaded into the page's storage, as a reload finds it. */
-async function heldWrite(anvil: Anvil, send: (gate: { beforeSend: () => Promise<unknown>; afterSubmit: (hash: Hex) => void }) => Promise<Hex>) {
+async function heldWrite(anvil: Anvil, held: typeof call, send: (gate: { beforeSend: () => Promise<unknown>; afterSubmit: (hash: Hex) => void }) => Promise<Hex>) {
   const memory = new Map<string, string>()
   const hold = createWriteHold({ storage: createHeldWriteStorage({ durable: () => undefined, memory }) })
-  await openStepHold(hold, account, false, call).send(anvil.client as unknown as WriteHoldClient, send).catch(() => undefined)
+  await openStepHold(hold, account, false, held).send(anvil.client as unknown as WriteHoldClient, send).catch(() => undefined)
   return Object.fromEntries(memory)
 }
 
@@ -78,7 +80,7 @@ test.describe('held writes found after a reload', () => {
 
   test('a write still confirming shows its notice until it mines', async ({ page }) => {
     await anvil.control.setAutomine(false)
-    const records = await heldWrite(anvil, async gate => {
+    const records = await heldWrite(anvil, call, async gate => {
       await gate.beforeSend()
       const hash = await anvil.wallet.sendTransaction({ to: call.to, data: call.data, value: call.value })
       gate.afterSubmit(hash)
@@ -93,7 +95,7 @@ test.describe('held writes found after a reload', () => {
 
   test('a write whose wallet reply was lost settles from the hash the wallet shows', async ({ page }) => {
     let lost: Hex | undefined
-    const records = await heldWrite(anvil, async gate => {
+    const records = await heldWrite(anvil, call, async gate => {
       await gate.beforeSend()
       lost = await anvil.wallet.sendTransaction({ to: call.to, data: call.data, value: call.value })
       throw new Error('The wallet reply was lost after it mined.')
@@ -105,5 +107,28 @@ test.describe('held writes found after a reload', () => {
     await page.getByRole('button', { name: 'Check transaction', exact: true }).click()
     await expect(notice).toHaveCount(0)
     await expect(page.getByLabel('Original transaction hash', { exact: true })).toHaveCount(0)
+  })
+
+  test('a creation that mined while away opens its market and joins Recently opened', async ({ page }) => {
+    // Defifa's deployer on this chain, standing in: every call emits one LaunchGame of game 42 by this account.
+    const deployer = deploymentPins.chains['84532'].deployer as Address
+    const [signature, ...indexed] = encodeEventTopics({ abi: DEFIFA_ABI.DefifaDeployer, eventName: 'LaunchGame',
+      args: { gameId: 42n, hook: call.to, governor: call.to } }) as Hex[]
+    const word = (value: Hex) => concatHex(['0x7f', value])
+    await anvil.control.setCode({ address: deployer, bytecode: concatHex([
+      '0x73', account, '0x602052', ...[...indexed].reverse().map(word), word(signature), '0x60406000a400',
+    ]) })
+    const creation = { ...call, to: deployer, intent: writeIntentKey('metalog-create', { chainId: baseSepolia.id, definition: numberToHex(1, { size: 32 }) }), label: 'Create market' }
+    await anvil.control.setAutomine(false)
+    const records = await heldWrite(anvil, creation, async gate => {
+      await gate.beforeSend()
+      const hash = await anvil.wallet.sendTransaction({ to: creation.to, data: creation.data, value: creation.value })
+      gate.afterSubmit(hash)
+      return hash
+    })
+    await anvil.control.mine({ blocks: 1 })
+    await open(page, anvil, records)
+    await expect(page.getByRole('link', { name: 'Open created market', exact: true })).toHaveAttribute('href', `/markets/${baseSepolia.id}/42`)
+    expect(await page.evaluate(() => localStorage.getItem('metalog:recent-markets:v1'))).toContain('42')
   })
 })
