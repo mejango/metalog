@@ -18,8 +18,11 @@ import { TransactionReview } from '@/components/TransactionReview'
 import { wagmiConfig } from './Providers'
 
 type TransactionContextValue = {
-  /** Review and send a prepared write under its intent's hold: the mined receipt once its effects apply, else null. */
-  execute: (prepared: PreparedTransaction, intent: string) => Promise<TransactionReceipt | null>
+  /**
+   * Review and send a prepared write under its intent's hold: the mined receipt once its effects apply, else null. A write
+   * handed back still confirming gives its receipt to `later` once it mines.
+   */
+  execute: (prepared: PreparedTransaction, intent: string, later?: (receipt: TransactionReceipt) => void | Promise<void>) => Promise<TransactionReceipt | null>
   busy: boolean
 }
 const TransactionContext = createContext<TransactionContextValue | null>(null)
@@ -33,24 +36,32 @@ export function useTransactions() {
 /**
  * Prepare a write, hand it to the transaction runner, then apply its confirmed receipt. One run at a time: `running` lasts
  * until the receipt's effects are applied or the write is handed back still confirming, `preparing` (the copy) ends at
- * the hand-off.
+ * the hand-off. A handed-back write completes the form when it mines, unless the form has started another since.
  */
 export function usePreparedWrite() {
   const [preparing, setPreparing] = useState(false)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState('')
   const active = useRef(false)
-  const run = useCallback(async <T,>(prepare: () => Promise<T>, send: (prepared: T) => Promise<TransactionReceipt | null>,
+  /** The form's latest operation: a delayed receipt completes only the operation that sent it, never a newer one. */
+  const operation = useRef(0)
+  const run = useCallback(async <T,>(prepare: () => Promise<T>,
+    send: (prepared: T, later: (receipt: TransactionReceipt) => Promise<void>) => Promise<TransactionReceipt | null>,
     settle: (receipt: TransactionReceipt) => void | Promise<void>, fallback: string) => {
     if (active.current) return
     active.current = true
+    const id = ++operation.current
+    const later = async (receipt: TransactionReceipt) => {
+      if (operation.current !== id) return
+      try { await settle(receipt) } catch (cause) { if (operation.current === id) setError(cause instanceof Error ? cause.message : fallback) }
+    }
     setError('')
     setPreparing(true)
     setRunning(true)
     try {
       const prepared = await prepare()
       setPreparing(false)
-      const receipt = await send(prepared)
+      const receipt = await send(prepared, later)
       if (receipt) await settle(receipt)
     } catch (cause) { setError(cause instanceof Error ? cause.message : fallback) }
     finally { active.current = false; setPreparing(false); setRunning(false) }
@@ -130,7 +141,7 @@ export function Transactions({ children }: PropsWithChildren) {
 
   /** A form's write is in review or sending: another form's handoff is refused, not left behind a replaced review. */
   const handing = useRef(false)
-  const execute = useCallback((prepared: PreparedTransaction, intent: string) => exclusive(handing, async () => {
+  const execute = useCallback((prepared: PreparedTransaction, intent: string, later?: (receipt: TransactionReceipt) => void | Promise<void>) => exclusive(handing, async () => {
     const uid = connector()?.uid
     const abort = new AbortController()
     aborts.current.add(abort)
@@ -147,7 +158,7 @@ export function Transactions({ children }: PropsWithChildren) {
           if (connector()?.uid !== uid) throw new ReviewLineError(REVIEWED_ACCOUNT_CHANGED_LINE)
         },
       })
-      return await runOutcome(ran, publicClientForChain(prepared.chainId), receipt => settled(prepared.chainId, receipt), setUnchecked)
+      return await runOutcome(ran, publicClientForChain(prepared.chainId), receipt => settled(prepared.chainId, receipt), setUnchecked, later)
     } finally { aborts.current.delete(abort); setSending(false) }
   }), [runner, settled])
 

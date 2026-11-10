@@ -137,7 +137,7 @@ export function ForecastEditor({ definition, market, current = true, onSubmitted
     if (!market || !model.preview || !curve.coefficients) return
     const { allocation } = model.preview, coefficients = curve.coefficients
     await run(async () => (await import('@/lib/defifa')).prepareEntry(market, allocation, address, coefficients),
-      prepared => transactions.execute(prepared, marketIntent(market)), () => onSubmitted?.(), 'Entry could not be prepared.')
+      (prepared, later) => transactions.execute(prepared, marketIntent(market), later), () => onSubmitted?.(), 'Entry could not be prepared.')
   }
   const closed = market && market.stage !== 'entry'
   // After entry, the chart shows the crowd and payout; the checkout stays mounted so a draft survives.

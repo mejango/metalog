@@ -59,14 +59,17 @@ const uncheckedLine = (cause: unknown) =>
 
 /**
  * What a run means for its form: the mined receipt, or null when nothing mined yet. A write still confirming is handed
- * back at once (its hold refuses the same intent until it settles) and its later settlement applied then. A mined write
+ * back at once (its hold refuses the same intent until it settles); its later receipt applies then and goes to `later`. A mined write
  * is the outcome, as the hold settled it from the exact call's receipt (no app effect check, as in jbm and revnet);
  * `apply` runs its effects, and a failed receipt read is reported, never thrown, so the form never offers to send it again.
  */
 export async function runOutcome(ran: RunEnd, client: Pick<PublicClient, 'getTransactionReceipt'>,
-  apply: (receipt: TransactionReceipt) => Promise<void>, report: (line: string) => void): Promise<TransactionReceipt | null> {
+  apply: (receipt: TransactionReceipt) => Promise<void>, report: (line: string) => void,
+  /** The submitting form's completion, for a receipt that arrives after the write was handed back. */
+  later?: (receipt: TransactionReceipt) => void | Promise<void>): Promise<TransactionReceipt | null> {
   if (ran?.status === 'receipt') {
-    void ran.ended().then(done => runOutcome(done, client, apply, report)).catch(cause => report(uncheckedLine(cause)))
+    void ran.ended().then(done => runOutcome(done, client, apply, report))
+      .then(receipt => receipt && later?.(receipt), cause => report(uncheckedLine(cause)))
     return null
   }
   const done = ran

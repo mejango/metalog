@@ -171,6 +171,19 @@ describe('a run\'s outcome for its form', () => {
     settle({ status: 'done', hashes: [mined.transactionHash], receipts: [mined] })
     await vi.waitFor(() => expect(apply).toHaveBeenCalledWith(mined))
   })
+
+  it('completes the submitting form with a delayed receipt once its effects apply', async () => {
+    const order: string[] = []
+    let settle!: (done: { status: 'done'; hashes: Hex[]; receipts: TransactionReceipt[] }) => void
+    const ended = new Promise<{ status: 'done'; hashes: Hex[]; receipts: TransactionReceipt[] }>(resolve => { settle = resolve })
+    const confirming = { status: 'receipt' as const, step: 0, hash: mined.transactionHash, ended: () => ended }
+    const form = vi.fn(async () => { order.push('form') })
+    await expect(runOutcome(confirming, noReceipt, async () => { order.push('apply') }, vi.fn(), form)).resolves.toBeNull()
+    expect(form).not.toHaveBeenCalled()
+    settle({ status: 'done', hashes: [mined.transactionHash], receipts: [mined] })
+    await vi.waitFor(() => expect(form).toHaveBeenCalledWith(mined))
+    expect(order).toEqual(['apply', 'form'])
+  })
 })
 
 describe('one handoff to the shared runner at a time', () => {
