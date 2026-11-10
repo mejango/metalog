@@ -32,7 +32,8 @@ export function useTransactions() {
 
 /**
  * Prepare a write, hand it to the transaction runner, then apply its confirmed receipt. One run at a time: `running` lasts
- * until the receipt's effects are applied, `preparing` (the copy) ends at the hand-off.
+ * until the receipt's effects are applied or the write is handed back still confirming, `preparing` (the copy) ends at
+ * the hand-off.
  */
 export function usePreparedWrite() {
   const [preparing, setPreparing] = useState(false)
@@ -92,6 +93,8 @@ export function Transactions({ children }: PropsWithChildren) {
   const [runChain, setRunChain] = useState<number | null>(null)
   /** A mined write whose receipt or effects could not be checked here. */
   const [unchecked, setUnchecked] = useState('')
+  /** A run is reviewing, sending or following its write in place; a write handed back still confirming is not. */
+  const [sending, setSending] = useState(false)
   /** A run reviewed for one account or connector sends nothing once either changes. */
   const aborts = useRef(new Set<AbortController>())
   useEffect(() => { for (const abort of aborts.current) abort.abort() }, [address, connected?.uid])
@@ -123,6 +126,7 @@ export function Transactions({ children }: PropsWithChildren) {
     const uid = connector()?.uid
     const abort = new AbortController()
     aborts.current.add(abort)
+    setSending(true)
     setCreated(null)
     setUnchecked('')
     setRunChain(prepared.chainId)
@@ -136,13 +140,13 @@ export function Transactions({ children }: PropsWithChildren) {
         },
       })
       return await runOutcome(ran, prepared, publicClientForChain(prepared.chainId), receipt => settled(prepared.chainId, receipt), setUnchecked)
-    } finally { aborts.current.delete(abort) }
+    } finally { aborts.current.delete(abort); setSending(false) }
   }, [runner, settled])
 
   const line = runner.status === 'held' ? runner.held?.line : runner.status === 'failed' ? null : STATUS_LINES[runner.status]
   const hash = runner.hash
   const explorer = hash && runChain ? chainForId(runChain).blockExplorers.default.url : undefined
-  return <TransactionContext.Provider value={{ execute, busy: runner.busy }}>
+  return <TransactionContext.Provider value={{ execute, busy: sending }}>
     {children}
     {review && <TransactionReview model={review.model} decide={review.decide} />}
     {address && SUPPORTED_CHAINS.map(chain => <HeldOnChain key={chain.id} chainId={chain.id} account={address} onSettled={settledHash}

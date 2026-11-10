@@ -160,4 +160,15 @@ describe('a run\'s outcome for its form', () => {
     await expect(runOutcome(done, write('0x12345678'), unread, async () => {}, report)).resolves.toBeNull()
     expect(report).toHaveBeenCalledWith(expect.stringContaining('The RPC timed out.'))
   })
+
+  it('hands a still-confirming write back to its form at once, and applies its later settlement', async () => {
+    const apply = vi.fn(async () => {})
+    let settle!: (done: { status: 'done'; hashes: Hex[]; receipts: TransactionReceipt[] }) => void
+    const ended = new Promise<{ status: 'done'; hashes: Hex[]; receipts: TransactionReceipt[] }>(resolve => { settle = resolve })
+    const confirming = { status: 'receipt' as const, step: 0, hash: mined.transactionHash, ended: () => ended }
+    const handed = runOutcome(confirming, write('0x12345678'), noReceipt, apply, vi.fn())
+    await expect(Promise.race([handed, new Promise(resolve => setTimeout(resolve, 50, 'still waiting'))])).resolves.toBeNull()
+    settle({ status: 'done', hashes: [mined.transactionHash], receipts: [mined] })
+    await vi.waitFor(() => expect(apply).toHaveBeenCalledWith(mined))
+  })
 })
