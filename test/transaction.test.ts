@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { numberToHex, type Address, type Hex, type PublicClient, type TransactionReceipt } from 'viem'
 import {
-  createHeldWriteStorage, createWriteHold, openStepHold, registerReviewHandler, sendReviewed, WriteHeldError, type WalletAdapter,
+  createHeldWriteStorage, createWriteHold, followHeldWrite, openStepHold, registerReviewHandler, sendReviewed, WriteHeldError, type WalletAdapter,
 } from '@bananapus/nana-sdk-core/review'
 import type { MarketDefinition } from '../src/domain/market'
 import { REVIEWED_RUN_BUSY_LINE } from '@bananapus/nana-sdk-core/review/react'
@@ -188,6 +188,38 @@ describe('a run\'s outcome for its form', () => {
     expect(order).toEqual(['apply', 'form'])
     stop.abort()
   })
+
+  it('completes the form from its own settlement after another reader acknowledged it and a new reservation replaced it', async () => {
+    confirmEveryReview()
+    const h = harness()
+    const intent = marketIntent(marketA)
+    const call = reviewedAction(write('0x12345678'), intent).calls[0]
+    const sent = numberToHex(99, { size: 32 })
+    const handle = openStepHold(h.hold, account, false, call)
+    await handle.send(h.client as never, async gate => { await gate.beforeSend(); gate.afterSubmit(sent); return sent })
+    h.chain.txs.push({ hash: sent, nonce: 7, to: terminal, input: '0x12345678', value: 7n })
+    const handedBack = { status: 'receipt' as const, step: 0, hash: sent, ended: async () => null }
+    const stop = new AbortController()
+    const form = { sent: vi.fn(), later: vi.fn(async () => {}) }
+    await runOutcome(handedBack, h.client as never, async () => {}, vi.fn(), form,
+      () => heldSuccess(handle, h.client as never, { signal: stop.signal }))
+    await new Promise(resolve => setTimeout(resolve, 200)) // the follow's first look ends; its next is seconds away
+    // Between this follow's looks the original mines; another reader of the hold (the held-writes notice) settles and
+    // acknowledges it, and another form reserves the market for a send the wallet then rejects.
+    h.chain.head += 1n
+    h.chain.txs.find(tx => tx.hash === sent)!.block = h.chain.head
+    const other = openStepHold(h.hold, account, false, call)
+    const cleared = await followHeldWrite(other, h.client as never, { signal: stop.signal, fastMs: 5 })
+    expect(cleared?.status === 'clear' && cleared.settled?.result).toBe('success')
+    if (cleared?.status === 'clear' && cleared.settled && 'hash' in cleared.settled) await other.acknowledge(cleared.settled)
+    h.setReply(async () => { throw Object.assign(new Error('User rejected the request.'), { code: 4001 }) })
+    const rejected = await h.send(write('0x12345678'), intent).catch(cause => cause)
+    expect(rejected).toBeInstanceOf(Error)
+    expect(rejected).not.toBeInstanceOf(WriteHeldError)
+    // The original's form still completes, once.
+    await vi.waitFor(() => expect(form.later).toHaveBeenCalledTimes(1), { timeout: 6_000 })
+    stop.abort()
+  }, 10_000)
 })
 
 describe('one handoff to the shared runner at a time', () => {

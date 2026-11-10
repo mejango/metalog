@@ -1,7 +1,7 @@
 import { keccak256, stringToHex, type Address, type Hex, type PublicClient, type TransactionReceipt } from 'viem'
 import {
   createWriteHold, followHeldWrite, RECEIPT_RETRY_MS, ReviewLineError, writeIntentKey,
-  type ReviewedAction, type ReviewedResult, type WriteHoldClient, type WriteHoldHandle,
+  type ReviewedAction, type ReviewedResult, type WriteHoldClient, type WriteHoldHandle, type WriteHoldSettled, type WriteHoldState,
 } from '@bananapus/nana-sdk-core/review'
 import { REVIEWED_RUN_BUSY_LINE, type ReviewedRunFailed, type ReviewedRunReceipt } from '@bananapus/nana-sdk-core/review/react'
 import { encodeMarketDefinition, type MarketDefinition } from '@/domain/market'
@@ -79,18 +79,29 @@ export async function settledReceipt(client: Pick<PublicClient, 'getTransactionR
 }
 
 /**
- * How a handed-back write's own reservation settled, followed until its hold is clear whatever else follows or replaces
- * the run: the hash of a success, else null (a failure, a release, or `signal` aborted).
+ * How a handed-back write's own reservation settled, taken when the hold settles it (its event, or this follow's own
+ * read), before anything acknowledges it or another reservation replaces it: the hash of a success, else null (a
+ * failure, a release, or `signal` aborted).
  */
 export async function heldSuccess(handle: WriteHoldHandle, client: WriteHoldClient, options: { signal: AbortSignal; pollMs?: number }): Promise<Hex | null> {
   const reservation = handle.peek().reservation
-  if (!reservation || !await followHeldWrite(handle, client, options)) return null
-  const settled = handle.settlementOf(reservation)
-  if (!settled || !('hash' in settled) || settled.result !== 'success') return null
+  if (!reservation) return null
+  const stop = new AbortController()
+  let settled: WriteHoldSettled | undefined
+  const take = (state: WriteHoldState | null) => {
+    if (settled || state?.status !== 'clear' || state.reservation !== reservation || !state.settled) return
+    settled = state.settled
+    stop.abort()
+  }
+  const unsubscribe = handle.subscribe(take)
+  try { take(await followHeldWrite(handle, client, { signal: AbortSignal.any([options.signal, stop.signal]), pollMs: options.pollMs })) }
+  finally { unsubscribe() }
+  const success = settled as WriteHoldSettled | undefined // set by `take`, which TypeScript's narrowing can't see
+  if (!success || !('hash' in success) || success.result !== 'success') return null
   // Its form completes with it, so it is shown, as the run would have acknowledged it. If that write fails, the hold
   // keeps offering "Send it again" for the user to answer, as the SDK shows any success seen while away.
-  await handle.acknowledge(settled).catch(() => null)
-  return settled.hash
+  await handle.acknowledge(success).catch(() => null)
+  return success.hash
 }
 
 /** The form a run came from: told when its write was sent, and completed with a receipt that arrives after hand-back. */
