@@ -11,7 +11,7 @@ import {
   type ReviewedRunStatus, type ReviewModel, type WriteHoldClient, type WriteHoldState,
 } from '@bananapus/nana-sdk-core/review'
 import { HeldWritesNotice, useHeldWrites, useReviewedRun } from '@bananapus/nana-sdk-core/review/react'
-import { exclusive, formRuns, heldSuccess, holds, reviewedAction, runOutcome, settledReceipt, type PreparedTransaction, type SubmittingForm } from '@/lib/transaction'
+import { exclusive, formRuns, heldSuccess, holds, refuseStale, reviewedAction, runOutcome, settledReceipt, type PreparedTransaction, type SubmittingForm } from '@/lib/transaction'
 import { chainForId, publicClientForChain, SUPPORTED_CHAINS } from '@/lib/wallet'
 import { rememberMarket } from '@/lib/recent-markets'
 import { TransactionReview } from '@/components/TransactionReview'
@@ -139,10 +139,12 @@ export function Transactions({ children }: PropsWithChildren) {
         assertWriteState: () => {
           refuseSigna()
           if (connector()?.uid !== uid) throw new ReviewLineError(REVIEWED_ACCOUNT_CHANGED_LINE)
+          refuseStale(form)
         },
       })
       return await runOutcome(ran, client, receipt => settled(prepared.chainId, receipt), setUnchecked, form,
-        () => heldSuccess(openStepHold(holds, prepared.account, false, action.calls[0]), client as unknown as WriteHoldClient, { signal: new AbortController().signal }))
+        onSuccess => heldSuccess(openStepHold(holds, prepared.account, false, action.calls[0]), client as unknown as WriteHoldClient,
+          { signal: new AbortController().signal, onSuccess }))
     } finally { aborts.current.delete(abort); setSending(false) }
   }), [runner, settled])
 

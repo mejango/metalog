@@ -1,6 +1,6 @@
 import { keccak256, stringToHex, type Address, type Hex, type PublicClient, type TransactionReceipt } from 'viem'
 import {
-  createWriteHold, followHeldWrite, RECEIPT_RETRY_MS, ReviewLineError, writeIntentKey,
+  createWriteHold, followHeldWrite, RECEIPT_RETRY_MS, ReviewLineError, TransactionReviewCancelledError, writeIntentKey,
   type ReviewedAction, type ReviewedResult, type WriteHoldClient, type WriteHoldHandle, type WriteHoldSettled, type WriteHoldState,
 } from '@bananapus/nana-sdk-core/review'
 import { REVIEWED_RUN_BUSY_LINE, type ReviewedRunFailed, type ReviewedRunReceipt } from '@bananapus/nana-sdk-core/review/react'
@@ -81,9 +81,10 @@ export async function settledReceipt(client: Pick<PublicClient, 'getTransactionR
 /**
  * How a handed-back write's own reservation settled, taken when the hold settles it (its event, or this follow's own
  * read), before anything acknowledges it or another reservation replaces it: the hash of a success, else null (a
- * failure, a release, or `signal` aborted).
+ * failure, a release, or `signal` aborted). `onSuccess` hears a success at that moment.
  */
-export async function heldSuccess(handle: WriteHoldHandle, client: WriteHoldClient, options: { signal: AbortSignal; pollMs?: number }): Promise<Hex | null> {
+export async function heldSuccess(handle: WriteHoldHandle, client: WriteHoldClient,
+  options: { signal: AbortSignal; pollMs?: number; onSuccess?: () => void }): Promise<Hex | null> {
   const reservation = handle.peek().reservation
   if (!reservation) return null
   const stop = new AbortController()
@@ -91,6 +92,7 @@ export async function heldSuccess(handle: WriteHoldHandle, client: WriteHoldClie
   const take = (state: WriteHoldState | null) => {
     if (settled || state?.status !== 'clear' || state.reservation !== reservation || !state.settled) return
     settled = state.settled
+    if (settled.result === 'success') options.onSuccess?.()
     stop.abort()
   }
   const unsubscribe = handle.subscribe(take)
@@ -104,8 +106,16 @@ export async function heldSuccess(handle: WriteHoldHandle, client: WriteHoldClie
   return success.hash
 }
 
-/** The form a run came from: told when its write was sent, and completed with a receipt that arrives after hand-back. */
-export type SubmittingForm = { sent: () => void; later: (receipt: TransactionReceipt) => void | Promise<void> }
+/**
+ * The form a run came from: told when its write was sent, completed when a handed-back write settles (`complete`, at once)
+ * and its receipt arrives (`later`). A send it began before that completion is `stale`.
+ */
+export type SubmittingForm = {
+  sent: () => void
+  complete: () => void
+  stale: () => boolean
+  later: (receipt: TransactionReceipt) => void | Promise<void>
+}
 
 /**
  * What a run means for its form: the mined receipt, or null when nothing mined yet. A write still confirming is handed
@@ -116,10 +126,10 @@ export type SubmittingForm = { sent: () => void; later: (receipt: TransactionRec
  */
 export async function runOutcome(ran: RunEnd, client: Pick<PublicClient, 'getTransactionReceipt'>,
   apply: (receipt: TransactionReceipt) => Promise<void>, report: (line: string) => void,
-  form?: SubmittingForm, follow?: () => Promise<Hex | null>): Promise<TransactionReceipt | null> {
+  form?: SubmittingForm, follow?: (onSuccess: () => void) => Promise<Hex | null>): Promise<TransactionReceipt | null> {
   if (ran?.status === 'receipt' || ran?.status === 'done') form?.sent()
   if (ran?.status === 'receipt') {
-    void follow?.().then(async hash => {
+    void follow?.(() => form?.complete()).then(async hash => {
       if (!hash) return
       const receipt = await settledReceipt(client, hash, report)
       await apply(receipt)
@@ -147,14 +157,19 @@ export function formRuns(show: { preparing: (on: boolean) => void; running: (on:
   /** Operations started, and the latest whose write was sent: a refused or cancelled retry leaves the earlier one current. */
   let started = 0
   let sent = 0
+  /** Handed-back writes that completed the form: a send begun before one is dropped. */
+  let completed = 0
   return async <T,>(prepare: () => Promise<T>, send: (prepared: T, form: SubmittingForm) => Promise<TransactionReceipt | null>,
     settle: (receipt: TransactionReceipt) => void | Promise<void>, fallback: string) => {
     if (active) return
     active = true
     const id = ++started
+    const generation = completed
     // A receipt that arrives after hand-back completes this operation, unless the form has sent a newer write since.
     const form: SubmittingForm = {
       sent: () => { sent = id },
+      complete: () => { if (sent === id) completed += 1 },
+      stale: () => completed !== generation,
       later: async receipt => {
         if (sent !== id) return
         try { await settle(receipt) } catch (cause) { if (sent === id) show.error(cause instanceof Error ? cause.message : fallback) }
@@ -166,9 +181,15 @@ export function formRuns(show: { preparing: (on: boolean) => void; running: (on:
     try {
       const prepared = await prepare()
       show.preparing(false)
+      if (form.stale()) return
       const receipt = await send(prepared, form)
       if (receipt) await settle(receipt)
     } catch (cause) { show.error(cause instanceof Error ? cause.message : fallback) }
     finally { active = false; show.preparing(false); show.running(false) }
   }
+}
+
+/** The last gate before the wallet: a form whose earlier write completed meanwhile sends nothing. */
+export function refuseStale(form?: SubmittingForm) {
+  if (form?.stale()) throw new TransactionReviewCancelledError()
 }

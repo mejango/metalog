@@ -5,7 +5,9 @@ import {
 } from '@bananapus/nana-sdk-core/review'
 import type { MarketDefinition } from '../src/domain/market'
 import { REVIEWED_RUN_BUSY_LINE } from '@bananapus/nana-sdk-core/review/react'
-import { creationIntent, exclusive, heldSuccess, marketIntent, reviewedAction, runOutcome, type PreparedTransaction } from '../src/lib/transaction'
+import {
+  creationIntent, exclusive, formRuns, heldSuccess, marketIntent, refuseStale, reviewedAction, runOutcome, type PreparedTransaction,
+} from '../src/lib/transaction'
 
 const account = '0x0000000000000000000000000000000000000011' as Address
 const terminal = '0x0000000000000000000000000000000000000022' as Address
@@ -174,7 +176,7 @@ describe('a run\'s outcome for its form', () => {
     const handedBack = { status: 'receipt' as const, step: 0, hash: sent, ended: async () => null }
     const stop = new AbortController()
     const order: string[] = []
-    const form = { sent: vi.fn(), later: vi.fn(async () => { order.push('form') }) }
+    const form = { sent: vi.fn(), complete: vi.fn(), stale: () => false, later: vi.fn(async () => { order.push('form') }) }
     const outcome = runOutcome(handedBack, h.client as never, async () => { order.push('apply') }, vi.fn(), form,
       () => heldSuccess(handle, h.client as never, { signal: stop.signal, pollMs: 5 }))
     await expect(outcome).resolves.toBeNull()
@@ -200,7 +202,7 @@ describe('a run\'s outcome for its form', () => {
     h.chain.txs.push({ hash: sent, nonce: 7, to: terminal, input: '0x12345678', value: 7n })
     const handedBack = { status: 'receipt' as const, step: 0, hash: sent, ended: async () => null }
     const stop = new AbortController()
-    const form = { sent: vi.fn(), later: vi.fn(async () => {}) }
+    const form = { sent: vi.fn(), complete: vi.fn(), stale: () => false, later: vi.fn(async () => {}) }
     await runOutcome(handedBack, h.client as never, async () => {}, vi.fn(), form,
       () => heldSuccess(handle, h.client as never, { signal: stop.signal }))
     await new Promise(resolve => setTimeout(resolve, 200)) // the follow's first look ends; its next is seconds away
@@ -218,6 +220,64 @@ describe('a run\'s outcome for its form', () => {
     expect(rejected).not.toBeInstanceOf(WriteHeldError)
     // The original's form still completes, once.
     await vi.waitFor(() => expect(form.later).toHaveBeenCalledTimes(1), { timeout: 6_000 })
+    stop.abort()
+  }, 10_000)
+})
+
+describe('a retry once the form\'s handed-back write completes', () => {
+  /** A form whose first write was handed back still confirming, and the means to retry it and to mine the original. */
+  async function handedBackForm() {
+    const h = harness()
+    const intent = marketIntent(marketA)
+    const sent = numberToHex(99, { size: 32 })
+    const stop = new AbortController()
+    const completed = vi.fn()
+    const run = formRuns({ preparing: () => {}, running: () => {}, error: () => {} })
+    const handle = openStepHold(h.hold, account, false, reviewedAction(write('0x12345678'), intent).calls[0])
+    await run(async () => write('0x12345678'), async (_prepared, form) => {
+      await handle.send(h.client as never, async gate => { await gate.beforeSend(); gate.afterSubmit(sent); return sent })
+      h.chain.txs.push({ hash: sent, nonce: 7, to: terminal, input: '0x12345678', value: 7n })
+      return runOutcome({ status: 'receipt', step: 0, hash: sent, ended: async () => null }, h.client as never, async () => {}, vi.fn(), form,
+        onSuccess => heldSuccess(handle, h.client as never, { signal: stop.signal, pollMs: 5, onSuccess }))
+    }, completed, 'failed')
+    await new Promise(resolve => setTimeout(resolve, 200)) // the follow's first look ends
+    const mineOriginal = () => { h.chain.head += 1n; h.chain.txs.find(tx => tx.hash === sent)!.block = h.chain.head }
+    /** The retry through the real runner, with the provider's last gate before the wallet. */
+    const retry = (prepare: () => Promise<PreparedTransaction>) => run(prepare, (prepared, form) =>
+      sendReviewed({ ...reviewedAction(prepared, intent), assertWriteState: () => refuseStale(form) }, { adapter: h.adapter, hold: h.hold,
+        clientFor: () => h.client as unknown as PublicClient }).then(() => null), completed, 'failed')
+    return { h, stop, completed, mineOriginal, retry }
+  }
+
+  it('drops a retry still preparing when the original confirms', async () => {
+    confirmEveryReview()
+    const { h, stop, completed, mineOriginal, retry } = await handedBackForm()
+    let prepared!: () => void
+    const retried = retry(() => new Promise(resolve => { prepared = () => resolve(write('0x12345678')) }))
+    mineOriginal()
+    await vi.waitFor(() => expect(completed).toHaveBeenCalledTimes(1), { timeout: 6_000 })
+    prepared()
+    await retried
+    expect(h.adapter.sendTransaction).not.toHaveBeenCalled()
+    stop.abort()
+  }, 10_000)
+
+  it('drops a retry already past preparation when the original confirms before its wallet opens', async () => {
+    confirmEveryReview()
+    const { h, stop, completed, mineOriginal, retry } = await handedBackForm()
+    // The retry waits for its wallet to be ready while the original confirms: it reaches its hold once that write is
+    // settled and shown, and its review opens.
+    let readying!: () => void
+    let ready!: () => void
+    const atReady = new Promise<void>(resolve => { readying = resolve })
+    h.adapter.ready = () => { readying(); return new Promise<void>(resolve => { ready = resolve }) }
+    const retried = retry(async () => write('0x12345678'))
+    await atReady
+    mineOriginal()
+    await vi.waitFor(() => expect(completed).toHaveBeenCalledTimes(1), { timeout: 6_000 })
+    ready()
+    await retried
+    expect(h.adapter.sendTransaction).not.toHaveBeenCalled()
     stop.abort()
   }, 10_000)
 })
