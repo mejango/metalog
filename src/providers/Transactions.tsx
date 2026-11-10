@@ -164,8 +164,8 @@ export function Transactions({ children }: PropsWithChildren) {
 }
 
 /**
- * Every write held for the account on one chain, after a reload or from another tab: the SDK's line and exit for the
- * ones that need the user, and each followed until it settles, so its effects apply here too. The open run follows and
+ * Every write held for the account on one chain, after a reload or from another tab: the SDK's line and exit for each,
+ * one still confirming too, and each followed until it settles, so its effects apply here too. The open run follows and
  * shows its own write.
  */
 function HeldOnChain({ chainId, account, onSettled, running, shown }: {
@@ -184,6 +184,7 @@ function HeldOnChain({ chainId, account, onSettled, running, shown }: {
     }
     return () => stop.abort()
   }, [keys, running, account, chainId, client, onSettled])
-  const held = items.filter(item => item.view.phase === 'held' && !(item.view.state && item.view.state.status !== 'clear' && item.view.state.record.id === shown))
-  return <HeldWritesNotice items={held} className="transaction-status" />
+  // As revnet lists them: every state the hold shows; the open run's write is in its own card.
+  const listed = items.filter(item => !(item.view.state && item.view.state.status !== 'clear' && item.view.state.record.id === shown))
+  return <HeldWritesNotice items={listed} className="transaction-status" />
 }
