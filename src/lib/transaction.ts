@@ -132,7 +132,8 @@ export async function runOutcome(ran: RunEnd, client: Pick<PublicClient, 'getTra
     void follow?.(() => form?.complete()).then(async hash => {
       if (!hash) return
       const receipt = await settledReceipt(client, hash, report)
-      await apply(receipt)
+      // Its form completes even when this tab's effects fail to apply: the write already succeeded.
+      await apply(receipt).catch(cause => report(uncheckedLine(cause)))
       await form?.later(receipt)
     }).catch(cause => report(uncheckedLine(cause)))
     return null
@@ -148,6 +149,7 @@ export async function runOutcome(ran: RunEnd, client: Pick<PublicClient, 'getTra
 
 /**
  * The form side of usePreparedWrite, outside React: prepare a write, hand it to `send`, then apply its confirmed receipt.
+ * `succeeded` closes the form's draft the moment its write succeeds, before its receipt is read and `settle` applies it.
  * One run at a time: `running` lasts until the receipt's effects are applied or the write is handed back still
  * confirming, `preparing` ends at the hand-off. A handed-back write completes the form when it mines, unless the form has
  * started another since.
@@ -159,20 +161,30 @@ export function formRuns(show: { preparing: (on: boolean) => void; running: (on:
   let sent = 0
   /** Handed-back writes that completed the form: a send begun before one is dropped. */
   let completed = 0
+  /** A handed-back write succeeded and its receipt is still being read: the form starts nothing until it completes. */
+  let closing = false
   return async <T,>(prepare: () => Promise<T>, send: (prepared: T, form: SubmittingForm) => Promise<TransactionReceipt | null>,
-    settle: (receipt: TransactionReceipt) => void | Promise<void>, fallback: string) => {
-    if (active) return
+    settle: (receipt: TransactionReceipt) => void | Promise<void>, fallback: string, succeeded?: () => void) => {
+    if (active || closing) return
     active = true
     const id = ++started
     const generation = completed
     // A receipt that arrives after hand-back completes this operation, unless the form has sent a newer write since.
     const form: SubmittingForm = {
       sent: () => { sent = id },
-      complete: () => { if (sent === id) completed += 1 },
+      // At the success itself, before any receipt read: the draft that sent it is closed and never sendable again.
+      complete: () => {
+        if (sent !== id) return
+        completed += 1
+        closing = true
+        show.running(true)
+        succeeded?.()
+      },
       stale: () => completed !== generation,
       later: async receipt => {
         if (sent !== id) return
         try { await settle(receipt) } catch (cause) { if (sent === id) show.error(cause instanceof Error ? cause.message : fallback) }
+        finally { closing = false; show.running(false) }
       },
     }
     show.error('')
@@ -183,7 +195,9 @@ export function formRuns(show: { preparing: (on: boolean) => void; running: (on:
       show.preparing(false)
       if (form.stale()) return
       const receipt = await send(prepared, form)
-      if (receipt) await settle(receipt)
+      if (!receipt) return
+      succeeded?.()
+      await settle(receipt)
     } catch (cause) { show.error(cause instanceof Error ? cause.message : fallback) }
     finally { active = false; show.preparing(false); show.running(false) }
   }

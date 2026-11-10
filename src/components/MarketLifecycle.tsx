@@ -76,11 +76,10 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   async function act(action: LifecycleAction) {
     if (!canAct || !address) return
     await run(async () => (await import('@/lib/defifa-lifecycle')).prepareLifecycleAction(market, action, address),
-      (prepared, form) => transactions.execute(prepared, marketIntent(market), form), () => {
+      (prepared, form) => transactions.execute(prepared, marketIntent(market), form), onRefresh, 'The transaction could not be prepared.', () => {
         setRowAction(null)
         if (action.kind === 'transfer' || action.kind === 'cash-out') select({})
-        onRefresh()
-      }, 'The transaction could not be prepared.')
+      })
   }
 
   const propose = <>

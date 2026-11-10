@@ -226,7 +226,7 @@ describe('a run\'s outcome for its form', () => {
 
 describe('a retry once the form\'s handed-back write completes', () => {
   /** A form whose first write was handed back still confirming, and the means to retry it and to mine the original. */
-  async function handedBackForm() {
+  async function handedBackForm(appReceipts?: (client: ReturnType<typeof harness>['client']) => Pick<PublicClient, 'getTransactionReceipt'>) {
     const h = harness()
     const intent = marketIntent(marketA)
     const sent = numberToHex(99, { size: 32 })
@@ -237,7 +237,8 @@ describe('a retry once the form\'s handed-back write completes', () => {
     await run(async () => write('0x12345678'), async (_prepared, form) => {
       await handle.send(h.client as never, async gate => { await gate.beforeSend(); gate.afterSubmit(sent); return sent })
       h.chain.txs.push({ hash: sent, nonce: 7, to: terminal, input: '0x12345678', value: 7n })
-      return runOutcome({ status: 'receipt', step: 0, hash: sent, ended: async () => null }, h.client as never, async () => {}, vi.fn(), form,
+      return runOutcome({ status: 'receipt', step: 0, hash: sent, ended: async () => null }, (appReceipts?.(h.client) ?? h.client) as never,
+        async () => {}, vi.fn(), form,
         onSuccess => heldSuccess(handle, h.client as never, { signal: stop.signal, pollMs: 5, onSuccess }))
     }, completed, 'failed')
     await new Promise(resolve => setTimeout(resolve, 200)) // the follow's first look ends
@@ -259,6 +260,24 @@ describe('a retry once the form\'s handed-back write completes', () => {
     prepared()
     await retried
     expect(h.adapter.sendTransaction).not.toHaveBeenCalled()
+    stop.abort()
+  }, 10_000)
+
+  it('refuses a retry started after the original settled while the app still reads its receipt', async () => {
+    confirmEveryReview()
+    // The app's own receipt read for the original (after its hold settled it) waits until the test lets it through.
+    let reading!: () => void
+    let read!: () => void
+    const atRead = new Promise<void>(resolve => { reading = resolve })
+    const { h, stop, completed, mineOriginal, retry } = await handedBackForm(client => ({
+      getTransactionReceipt: async args => { reading(); await new Promise<void>(resolve => { read = resolve }); return client.getTransactionReceipt(args) },
+    }))
+    mineOriginal()
+    await atRead
+    await retry(async () => write('0x12345678'))
+    expect(h.adapter.sendTransaction).not.toHaveBeenCalled()
+    read()
+    await vi.waitFor(() => expect(completed).toHaveBeenCalledTimes(1), { timeout: 2_000 })
     stop.abort()
   }, 10_000)
 
