@@ -90,4 +90,20 @@ test.describe('held writes found after a reload', () => {
     await anvil.control.mine({ blocks: 1 })
     await expect(notice).toHaveCount(0, { timeout: 60_000 })
   })
+
+  test('a write whose wallet reply was lost settles from the hash the wallet shows', async ({ page }) => {
+    let lost: Hex | undefined
+    const records = await heldWrite(anvil, async gate => {
+      await gate.beforeSend()
+      lost = await anvil.wallet.sendTransaction({ to: call.to, data: call.data, value: call.value })
+      throw new Error('The wallet reply was lost after it mined.')
+    })
+    await open(page, anvil, records)
+    const notice = page.locator('[data-phase="held"]')
+    await expect(notice).toBeVisible()
+    await page.getByLabel('Original transaction hash', { exact: true }).fill(lost!)
+    await page.getByRole('button', { name: 'Check transaction', exact: true }).click()
+    await expect(notice).toHaveCount(0)
+    await expect(page.getByLabel('Original transaction hash', { exact: true })).toHaveCount(0)
+  })
 })

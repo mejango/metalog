@@ -5,10 +5,10 @@ import Link from 'next/link'
 import { useQueryClient } from '@tanstack/react-query'
 import { getAccount, getWalletClient, switchChain } from '@wagmi/core'
 import { useAccount } from 'wagmi'
-import type { Address, Hex, TransactionReceipt, WalletClient } from 'viem'
+import { isHash, type Address, type Hex, type TransactionReceipt, type WalletClient } from 'viem'
 import {
   followHeldWrite, registerReviewHandler, REVIEWED_ACCOUNT_CHANGED_LINE, ReviewLineError, viemWalletAdapter,
-  type ReviewedRunStatus, type ReviewModel, type WriteHoldClient,
+  type ReviewedRunStatus, type ReviewModel, type WriteHoldClient, type WriteHoldState,
 } from '@bananapus/nana-sdk-core/review'
 import { HeldWritesNotice, useHeldWrites, useReviewedRun } from '@bananapus/nana-sdk-core/review/react'
 import { holds, reviewedAction, runOutcome, type PreparedTransaction } from '@/lib/transaction'
@@ -186,5 +186,38 @@ function HeldOnChain({ chainId, account, onSettled, running, shown }: {
   }, [keys, running, account, chainId, client, onSettled])
   // As revnet lists them: every state the hold shows; the open run's write is in its own card.
   const listed = items.filter(item => !(item.view.state && item.view.state.status !== 'clear' && item.view.state.record.id === shown))
-  return <HeldWritesNotice items={listed} className="transaction-status" />
+  // A lost wallet reply, the open run's too: the hold settles it from the hash the wallet shows.
+  const noHash = items.filter(item => item.view.state?.status === 'held-no-hash')
+  return <>
+    <HeldWritesNotice items={listed} className="transaction-status" />
+    {noHash.map(item => <AttachHash key={item.key} attach={hash => {
+      const handle = holds.list({ account, chainId }).find(entry => entry.key === item.key)?.handle
+      if (!handle) throw new Error('This transaction is no longer held.')
+      return handle.attachHash(client, hash)
+    }} onSettled={hash => onSettled(chainId, hash)} />)}
+  </>
+}
+
+/** The original hash of a write whose wallet reply was lost, as revnet's recovery attaches one; nothing is sent. */
+function AttachHash({ attach, onSettled }: { attach: (hash: Hex) => Promise<WriteHoldState>; onSettled: (hash: Hex) => Promise<void> }) {
+  const [hash, setHash] = useState('')
+  const [line, setLine] = useState('')
+  const [checking, setChecking] = useState(false)
+  const check = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!isHash(hash)) { setLine('Enter the complete transaction hash.'); return }
+    setChecking(true)
+    setLine('')
+    try {
+      const state = await attach(hash)
+      if (state.status !== 'clear') setLine(state.line)
+      else if (state.settled && 'hash' in state.settled && state.settled.result === 'success') await onSettled(state.settled.hash)
+    } catch (cause) { setLine(cause instanceof Error ? cause.message : 'This transaction could not be checked.') }
+    finally { setChecking(false) }
+  }
+  return <form className="transaction-status" onSubmit={event => void check(event)}>
+    <label className="field"><span>Original transaction hash</span><input value={hash} onChange={event => setHash(event.target.value.trim())} autoComplete="off" spellCheck={false} /></label>
+    <button type="submit" disabled={checking}>Check transaction</button>
+    {line && <p role="alert">{line}</p>}
+  </form>
 }
