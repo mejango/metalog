@@ -76,7 +76,7 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   async function act(action: LifecycleAction) {
     if (!canAct || !address) return
     await run(async () => (await import('@/lib/defifa-lifecycle')).prepareLifecycleAction(market, action, address),
-      (prepared, later) => transactions.execute(prepared, marketIntent(market), later), () => {
+      (prepared, form) => transactions.execute(prepared, marketIntent(market), form), () => {
         setRowAction(null)
         if (action.kind === 'transfer' || action.kind === 'cash-out') select({})
         onRefresh()

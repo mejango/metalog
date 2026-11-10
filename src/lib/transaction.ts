@@ -1,5 +1,8 @@
 import { keccak256, stringToHex, type Address, type Hex, type PublicClient, type TransactionReceipt } from 'viem'
-import { createWriteHold, RECEIPT_RETRY_MS, ReviewLineError, writeIntentKey, type ReviewedAction, type ReviewedResult } from '@bananapus/nana-sdk-core/review'
+import {
+  createWriteHold, followHeldWrite, RECEIPT_RETRY_MS, ReviewLineError, writeIntentKey,
+  type ReviewedAction, type ReviewedResult, type WriteHoldClient, type WriteHoldHandle,
+} from '@bananapus/nana-sdk-core/review'
 import { REVIEWED_RUN_BUSY_LINE, type ReviewedRunFailed, type ReviewedRunReceipt } from '@bananapus/nana-sdk-core/review/react'
 import { encodeMarketDefinition, type MarketDefinition } from '@/domain/market'
 
@@ -76,18 +79,41 @@ export async function settledReceipt(client: Pick<PublicClient, 'getTransactionR
 }
 
 /**
+ * How a handed-back write's own reservation settled, followed until its hold is clear whatever else follows or replaces
+ * the run: the hash of a success, else null (a failure, a release, or `signal` aborted).
+ */
+export async function heldSuccess(handle: WriteHoldHandle, client: WriteHoldClient, options: { signal: AbortSignal; pollMs?: number }): Promise<Hex | null> {
+  const reservation = handle.peek().reservation
+  if (!reservation || !await followHeldWrite(handle, client, options)) return null
+  const settled = handle.settlementOf(reservation)
+  if (!settled || !('hash' in settled) || settled.result !== 'success') return null
+  // Its form completes with it, so it is shown, as the run would have acknowledged it. If that write fails, the hold
+  // keeps offering "Send it again" for the user to answer, as the SDK shows any success seen while away.
+  await handle.acknowledge(settled).catch(() => null)
+  return settled.hash
+}
+
+/** The form a run came from: told when its write was sent, and completed with a receipt that arrives after hand-back. */
+export type SubmittingForm = { sent: () => void; later: (receipt: TransactionReceipt) => void | Promise<void> }
+
+/**
  * What a run means for its form: the mined receipt, or null when nothing mined yet. A write still confirming is handed
- * back at once (its hold refuses the same intent until it settles); its later receipt applies then and goes to `later`. A mined write
- * is the outcome, as the hold settled it from the exact call's receipt (no app effect check, as in jbm and revnet);
+ * back at once (its hold refuses the same intent until it settles). `follow` waits on that write's own reservation, not
+ * on the replaceable run, so a refused retry keeps it: once it settles its receipt applies and completes `form`. A mined
+ * write is the outcome, as the hold settled it from the exact call's receipt (no app effect check, as in jbm and revnet);
  * `apply` runs its effects, and a failed receipt read is reported, never thrown, so the form never offers to send it again.
  */
 export async function runOutcome(ran: RunEnd, client: Pick<PublicClient, 'getTransactionReceipt'>,
   apply: (receipt: TransactionReceipt) => Promise<void>, report: (line: string) => void,
-  /** The submitting form's completion, for a receipt that arrives after the write was handed back. */
-  later?: (receipt: TransactionReceipt) => void | Promise<void>): Promise<TransactionReceipt | null> {
+  form?: SubmittingForm, follow?: () => Promise<Hex | null>): Promise<TransactionReceipt | null> {
+  if (ran?.status === 'receipt' || ran?.status === 'done') form?.sent()
   if (ran?.status === 'receipt') {
-    void ran.ended().then(done => runOutcome(done, client, apply, report))
-      .then(receipt => receipt && later?.(receipt), cause => report(uncheckedLine(cause)))
+    void follow?.().then(async hash => {
+      if (!hash) return
+      const receipt = await settledReceipt(client, hash, report)
+      await apply(receipt)
+      await form?.later(receipt)
+    }).catch(cause => report(uncheckedLine(cause)))
     return null
   }
   const done = ran

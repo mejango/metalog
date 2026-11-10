@@ -195,7 +195,7 @@ export function CreateMarket({ now }: { now: number }) {
     if (wallet.isSigna) { wallet.connect({ externalOnly: true }); return }
     const definition = draft.definition, account = wallet.address
     await run(async () => (await import('@/lib/defifa')).prepareCreateMarket(definition, chainId, account),
-      (prepared, later) => transactions.execute(prepared, creationIntent(chainId, definition), later), async receipt => {
+      (prepared, form) => transactions.execute(prepared, creationIntent(chainId, definition), form), async receipt => {
       const projectId = (await import('@/lib/defifa')).createdMarketId(receipt)
       if (!projectId) throw new Error('The transaction was confirmed, but its game ID could not be read. Check the transaction before creating again.')
       router.push(`/markets/${chainId}/${projectId}`)

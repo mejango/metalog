@@ -5,7 +5,7 @@ import {
 } from '@bananapus/nana-sdk-core/review'
 import type { MarketDefinition } from '../src/domain/market'
 import { REVIEWED_RUN_BUSY_LINE } from '@bananapus/nana-sdk-core/review/react'
-import { creationIntent, exclusive, marketIntent, reviewedAction, runOutcome, type PreparedTransaction } from '../src/lib/transaction'
+import { creationIntent, exclusive, heldSuccess, marketIntent, reviewedAction, runOutcome, type PreparedTransaction } from '../src/lib/transaction'
 
 const account = '0x0000000000000000000000000000000000000011' as Address
 const terminal = '0x0000000000000000000000000000000000000022' as Address
@@ -161,28 +161,32 @@ describe('a run\'s outcome for its form', () => {
     expect(report).toHaveBeenCalledWith(expect.stringContaining('The RPC timed out.'))
   })
 
-  it('hands a still-confirming write back to its form at once, and applies its later settlement', async () => {
-    const apply = vi.fn(async () => {})
-    let settle!: (done: { status: 'done'; hashes: Hex[]; receipts: TransactionReceipt[] }) => void
-    const ended = new Promise<{ status: 'done'; hashes: Hex[]; receipts: TransactionReceipt[] }>(resolve => { settle = resolve })
-    const confirming = { status: 'receipt' as const, step: 0, hash: mined.transactionHash, ended: () => ended }
-    const handed = runOutcome(confirming, noReceipt, apply, vi.fn())
-    await expect(Promise.race([handed, new Promise(resolve => setTimeout(resolve, 50, 'still waiting'))])).resolves.toBeNull()
-    settle({ status: 'done', hashes: [mined.transactionHash], receipts: [mined] })
-    await vi.waitFor(() => expect(apply).toHaveBeenCalledWith(mined))
-  })
-
-  it('completes the submitting form with a delayed receipt once its effects apply', async () => {
+  it('completes the form that sent a handed-back write once its hold settles, through a refused retry', async () => {
+    confirmEveryReview()
+    const h = harness()
+    const intent = marketIntent(marketA)
+    // The wallet took the write under the market's hold and returned its hash; it waits in the mempool, and the run
+    // handed it back. A later run (the retry below) replaces that run, so its ended() resolves null.
+    const sent = numberToHex(99, { size: 32 })
+    const handle = openStepHold(h.hold, account, false, reviewedAction(write('0x12345678'), intent).calls[0])
+    await handle.send(h.client as never, async gate => { await gate.beforeSend(); gate.afterSubmit(sent); return sent })
+    h.chain.txs.push({ hash: sent, nonce: 7, to: terminal, input: '0x12345678', value: 7n })
+    const handedBack = { status: 'receipt' as const, step: 0, hash: sent, ended: async () => null }
+    const stop = new AbortController()
     const order: string[] = []
-    let settle!: (done: { status: 'done'; hashes: Hex[]; receipts: TransactionReceipt[] }) => void
-    const ended = new Promise<{ status: 'done'; hashes: Hex[]; receipts: TransactionReceipt[] }>(resolve => { settle = resolve })
-    const confirming = { status: 'receipt' as const, step: 0, hash: mined.transactionHash, ended: () => ended }
-    const form = vi.fn(async () => { order.push('form') })
-    await expect(runOutcome(confirming, noReceipt, async () => { order.push('apply') }, vi.fn(), form)).resolves.toBeNull()
-    expect(form).not.toHaveBeenCalled()
-    settle({ status: 'done', hashes: [mined.transactionHash], receipts: [mined] })
-    await vi.waitFor(() => expect(form).toHaveBeenCalledWith(mined))
+    const form = { sent: vi.fn(), later: vi.fn(async () => { order.push('form') }) }
+    const outcome = runOutcome(handedBack, h.client as never, async () => { order.push('apply') }, vi.fn(), form,
+      () => heldSuccess(handle, h.client as never, { signal: stop.signal, pollMs: 5 }))
+    await expect(outcome).resolves.toBeNull()
+    expect(form.sent).toHaveBeenCalledTimes(1)
+    // A retry of the same transfer is refused by the hold and sends nothing.
+    await expect(h.send(write('0x12345678'), intent)).rejects.toBeInstanceOf(WriteHeldError)
+    // The original mines: its form completes once, after the app's effects.
+    h.chain.head += 1n
+    h.chain.txs.find(tx => tx.hash === sent)!.block = h.chain.head
+    await vi.waitFor(() => expect(form.later).toHaveBeenCalledTimes(1), { timeout: 5_000 })
     expect(order).toEqual(['apply', 'form'])
+    stop.abort()
   })
 })
 
