@@ -4,7 +4,7 @@ import {
   createHeldWriteStorage, createWriteHold, openStepHold, registerReviewHandler, sendReviewed, WriteHeldError, type WalletAdapter,
 } from '@bananapus/nana-sdk-core/review'
 import type { MarketDefinition } from '../src/domain/market'
-import { creationIntent, marketIntent, reviewedAction, type PreparedTransaction } from '../src/lib/transaction'
+import { creationIntent, marketIntent, reviewedAction, runOutcome, type PreparedTransaction } from '../src/lib/transaction'
 
 const account = '0x0000000000000000000000000000000000000011' as Address
 const terminal = '0x0000000000000000000000000000000000000022' as Address
@@ -136,5 +136,28 @@ describe('metalog writes under the SDK hold', () => {
     expect(state).toMatchObject({ status: 'dropped-proven', exit: true })
     await expect(held.handle.exit(state, { checkedWallet: true }, h.client as never)).resolves.toMatchObject({ released: true })
     await expect(h.send(write('0x12345678'), marketIntent(marketA))).resolves.toMatchObject({ status: 'done' })
+  })
+})
+
+describe('a run\'s outcome for its form', () => {
+  const mined = { transactionHash: `0x${'ab'.repeat(32)}`, status: 'success', logs: [] } as unknown as TransactionReceipt
+  const noReceipt = { getTransactionReceipt: async () => { throw new Error('unused') } }
+
+  it('returns a mined write as the outcome when its effect check fails, and reports the check instead of an error', async () => {
+    const apply = vi.fn(async () => {})
+    const report = vi.fn()
+    const prepared = { ...write('0x12345678'), verifyReceipt: async () => { throw new Error('Center did not answer.') } }
+    const done = { status: 'done' as const, hashes: [mined.transactionHash], receipts: [mined] }
+    await expect(runOutcome(done, prepared, noReceipt, apply, report)).resolves.toBe(mined)
+    expect(apply).toHaveBeenCalledWith(mined)
+    expect(report).toHaveBeenCalledWith(expect.stringContaining('Center did not answer.'))
+  })
+
+  it('reports a mined write whose receipt could not be read, instead of failing its form', async () => {
+    const report = vi.fn()
+    const done = { status: 'done' as const, hashes: [mined.transactionHash], receipts: [] }
+    const unread = { getTransactionReceipt: async () => { throw new Error('The RPC timed out.') } }
+    await expect(runOutcome(done, write('0x12345678'), unread, async () => {}, report)).resolves.toBeNull()
+    expect(report).toHaveBeenCalledWith(expect.stringContaining('The RPC timed out.'))
   })
 })

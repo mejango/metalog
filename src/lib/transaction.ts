@@ -13,7 +13,7 @@ export type PreparedTransaction = {
   title: string
   details: readonly { label: string; value: string }[]
   reverify?: () => Promise<void>
-  /** The Defifa effects the confirmed receipt must show, read once the write settled. */
+  /** The Defifa effects the confirmed receipt must show, read once the write settled; a failure is reported, not a resend. */
   verifyReceipt?: (receipt: TransactionReceipt) => void | Promise<void>
 }
 
@@ -45,13 +45,23 @@ export function reviewedAction(prepared: PreparedTransaction, intent: string): R
 /** How `useReviewedRun` ends a run. */
 export type RunEnd = ReviewedResult | ReviewedRunReceipt | ReviewedRunFailed | null
 
-/** What a run means for its form: the confirmed receipt once its effects check and `apply` ran, else null. */
+/** The line for a mined write whose receipt or effects could not be checked here: the write still went through. */
+export const uncheckedLine = (cause: unknown) =>
+  `Transaction confirmed. Its result could not be checked here: ${cause instanceof Error ? cause.message : 'the check failed.'}`
+
+/**
+ * What a run means for its form: the mined receipt, or null when nothing mined. A mined write is the outcome; `apply`
+ * runs its effects, and a failed receipt read or effect check is reported, never thrown, so the form never offers to
+ * send it again.
+ */
 export async function runOutcome(ran: RunEnd, prepared: PreparedTransaction, client: Pick<PublicClient, 'getTransactionReceipt'>,
-  apply: (receipt: TransactionReceipt) => Promise<void>): Promise<TransactionReceipt | null> {
+  apply: (receipt: TransactionReceipt) => Promise<void>, report: (line: string) => void): Promise<TransactionReceipt | null> {
   const done = ran?.status === 'receipt' ? await ran.ended() : ran
   if (done?.status !== 'done') return null
-  const receipt = done.receipts.at(-1) ?? await client.getTransactionReceipt({ hash: done.hashes.at(-1)! })
-  await prepared.verifyReceipt?.(receipt)
+  let receipt: TransactionReceipt
+  try { receipt = done.receipts.at(-1) ?? await client.getTransactionReceipt({ hash: done.hashes.at(-1)! }) }
+  catch (cause) { report(uncheckedLine(cause)); return null }
   await apply(receipt)
+  await Promise.resolve().then(() => prepared.verifyReceipt?.(receipt)).catch(cause => report(uncheckedLine(cause)))
   return receipt
 }

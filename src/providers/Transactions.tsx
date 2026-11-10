@@ -18,7 +18,7 @@ import { TransactionReview } from '@/components/TransactionReview'
 import { wagmiConfig } from './Providers'
 
 type TransactionContextValue = {
-  /** Review and send a prepared write under its intent's hold; the confirmed receipt once its effects check, else null. */
+  /** Review and send a prepared write under its intent's hold: the mined receipt once its effects apply, else null. */
   execute: (prepared: PreparedTransaction, intent: string) => Promise<TransactionReceipt | null>
   busy: boolean
 }
@@ -90,6 +90,8 @@ export function Transactions({ children }: PropsWithChildren) {
   const [review, setReview] = useState<{ model: ReviewModel; decide: (approved: boolean) => void } | null>(null)
   const [created, setCreated] = useState<string | null>(null)
   const [runChain, setRunChain] = useState<number | null>(null)
+  /** A mined write whose receipt or effects could not be checked here. */
+  const [unchecked, setUnchecked] = useState('')
   /** A run reviewed for one account or connector sends nothing once either changes. */
   const aborts = useRef(new Set<AbortController>())
   useEffect(() => { for (const abort of aborts.current) abort.abort() }, [address, connected?.uid])
@@ -122,6 +124,7 @@ export function Transactions({ children }: PropsWithChildren) {
     const abort = new AbortController()
     aborts.current.add(abort)
     setCreated(null)
+    setUnchecked('')
     setRunChain(prepared.chainId)
     try {
       const ran = await runner.run({
@@ -132,7 +135,7 @@ export function Transactions({ children }: PropsWithChildren) {
           if (connector()?.uid !== uid) throw new ReviewLineError(REVIEWED_ACCOUNT_CHANGED_LINE)
         },
       })
-      return await runOutcome(ran, prepared, publicClientForChain(prepared.chainId), receipt => settled(prepared.chainId, receipt))
+      return await runOutcome(ran, prepared, publicClientForChain(prepared.chainId), receipt => settled(prepared.chainId, receipt), setUnchecked)
     } finally { aborts.current.delete(abort) }
   }, [runner, settled])
 
@@ -144,9 +147,10 @@ export function Transactions({ children }: PropsWithChildren) {
     {review && <TransactionReview model={review.model} decide={review.decide} />}
     {address && SUPPORTED_CHAINS.map(chain => <HeldOnChain key={chain.id} chainId={chain.id} account={address} onSettled={settledHash}
       running={runner.busy} shown={runner.held?.state && runner.held.state.status !== 'clear' ? runner.held.state.record.id : undefined} />)}
-    {(line || runner.error || created) && <aside id="transaction-status" tabIndex={-1} className="transaction-status" aria-label="Transaction status">
+    {(line || runner.error || created || unchecked) && <aside id="transaction-status" tabIndex={-1} className="transaction-status" aria-label="Transaction status">
       {line && <p role="status">{line}</p>}
       {runner.status === 'failed' && runner.error && <p role="alert">{runner.error}</p>}
+      {unchecked && <p role="alert">{unchecked}</p>}
       {hash && explorer && <p><a href={`${explorer}/tx/${hash}`} target="_blank" rel="noreferrer">View transaction</a></p>}
       {created && <p><Link href={created}>Open created market</Link></p>}
       {runner.exitAction && <button type="button" onClick={() => void runner.exitAction?.run().then(released => { if (released) runner.reset() })}>{runner.exitAction.label}</button>}
