@@ -1,6 +1,6 @@
 import { keccak256, stringToHex, type Address, type Hex, type PublicClient, type TransactionReceipt } from 'viem'
-import { createWriteHold, writeIntentKey, type ReviewedAction, type ReviewedResult } from '@bananapus/nana-sdk-core/review'
-import type { ReviewedRunFailed, ReviewedRunReceipt } from '@bananapus/nana-sdk-core/review/react'
+import { createWriteHold, ReviewLineError, writeIntentKey, type ReviewedAction, type ReviewedResult } from '@bananapus/nana-sdk-core/review'
+import { REVIEWED_RUN_BUSY_LINE, type ReviewedRunFailed, type ReviewedRunReceipt } from '@bananapus/nana-sdk-core/review/react'
 import { encodeMarketDefinition, type MarketDefinition } from '@/domain/market'
 
 /** A product adapter owns calldata, current-state checks and its receipt effects. */
@@ -38,6 +38,16 @@ export function reviewedAction(prepared: PreparedTransaction, intent: string): R
     context: details.map(detail => ({ ...detail })),
     ...(reverify ? { reverify: () => reverify() } : {}),
   }
+}
+
+/**
+ * One handoff at a time to the app's one runner, claimed synchronously in `open`: a form whose write would replace
+ * another form's open review is refused with the SDK's busy line, so neither is left waiting.
+ */
+export async function exclusive<T>(open: { current: boolean }, run: () => Promise<T>): Promise<T> {
+  if (open.current) throw new ReviewLineError(REVIEWED_RUN_BUSY_LINE)
+  open.current = true
+  try { return await run() } finally { open.current = false }
 }
 
 /** How `useReviewedRun` ends a run. */

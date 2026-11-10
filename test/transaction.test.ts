@@ -4,7 +4,8 @@ import {
   createHeldWriteStorage, createWriteHold, openStepHold, registerReviewHandler, sendReviewed, WriteHeldError, type WalletAdapter,
 } from '@bananapus/nana-sdk-core/review'
 import type { MarketDefinition } from '../src/domain/market'
-import { creationIntent, marketIntent, reviewedAction, runOutcome, type PreparedTransaction } from '../src/lib/transaction'
+import { REVIEWED_RUN_BUSY_LINE } from '@bananapus/nana-sdk-core/review/react'
+import { creationIntent, exclusive, marketIntent, reviewedAction, runOutcome, type PreparedTransaction } from '../src/lib/transaction'
 
 const account = '0x0000000000000000000000000000000000000011' as Address
 const terminal = '0x0000000000000000000000000000000000000022' as Address
@@ -169,5 +170,17 @@ describe('a run\'s outcome for its form', () => {
     await expect(Promise.race([handed, new Promise(resolve => setTimeout(resolve, 50, 'still waiting'))])).resolves.toBeNull()
     settle({ status: 'done', hashes: [mined.transactionHash], receipts: [mined] })
     await vi.waitFor(() => expect(apply).toHaveBeenCalledWith(mined))
+  })
+})
+
+describe('one handoff to the shared runner at a time', () => {
+  it('refuses a second handoff while one reviews or sends, and takes the next once it ends', async () => {
+    const open = { current: false }
+    let finish!: () => void
+    const first = exclusive(open, () => new Promise<string>(resolve => { finish = () => resolve('first') }))
+    await expect(exclusive(open, async () => 'second')).rejects.toThrow(REVIEWED_RUN_BUSY_LINE)
+    finish()
+    await expect(first).resolves.toBe('first')
+    await expect(exclusive(open, async () => 'third')).resolves.toBe('third')
   })
 })

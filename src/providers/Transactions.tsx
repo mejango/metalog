@@ -11,7 +11,7 @@ import {
   type ReviewedRunStatus, type ReviewModel, type WriteHoldClient, type WriteHoldState,
 } from '@bananapus/nana-sdk-core/review'
 import { HeldWritesNotice, useHeldWrites, useReviewedRun } from '@bananapus/nana-sdk-core/review/react'
-import { holds, reviewedAction, runOutcome, type PreparedTransaction } from '@/lib/transaction'
+import { exclusive, holds, reviewedAction, runOutcome, type PreparedTransaction } from '@/lib/transaction'
 import { chainForId, publicClientForChain, SUPPORTED_CHAINS } from '@/lib/wallet'
 import { rememberMarket } from '@/lib/recent-markets'
 import { TransactionReview } from '@/components/TransactionReview'
@@ -122,7 +122,9 @@ export function Transactions({ children }: PropsWithChildren) {
     await settled(chainId, await publicClientForChain(chainId).getTransactionReceipt({ hash }))
   }, [settled])
 
-  const execute = useCallback(async (prepared: PreparedTransaction, intent: string) => {
+  /** A form's write is in review or sending: another form's handoff is refused, not left behind a replaced review. */
+  const handing = useRef(false)
+  const execute = useCallback((prepared: PreparedTransaction, intent: string) => exclusive(handing, async () => {
     const uid = connector()?.uid
     const abort = new AbortController()
     aborts.current.add(abort)
@@ -141,7 +143,7 @@ export function Transactions({ children }: PropsWithChildren) {
       })
       return await runOutcome(ran, publicClientForChain(prepared.chainId), receipt => settled(prepared.chainId, receipt), setUnchecked)
     } finally { aborts.current.delete(abort); setSending(false) }
-  }, [runner, settled])
+  }), [runner, settled])
 
   const line = runner.status === 'held' ? runner.held?.line : runner.status === 'failed' ? null : STATUS_LINES[runner.status]
   const hash = runner.hash
