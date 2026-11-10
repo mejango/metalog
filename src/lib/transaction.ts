@@ -124,3 +124,40 @@ export async function runOutcome(ran: RunEnd, client: Pick<PublicClient, 'getTra
   await apply(receipt)
   return receipt
 }
+
+/**
+ * The form side of usePreparedWrite, outside React: prepare a write, hand it to `send`, then apply its confirmed receipt.
+ * One run at a time: `running` lasts until the receipt's effects are applied or the write is handed back still
+ * confirming, `preparing` ends at the hand-off. A handed-back write completes the form when it mines, unless the form has
+ * started another since.
+ */
+export function formRuns(show: { preparing: (on: boolean) => void; running: (on: boolean) => void; error: (line: string) => void }) {
+  let active = false
+  /** Operations started, and the latest whose write was sent: a refused or cancelled retry leaves the earlier one current. */
+  let started = 0
+  let sent = 0
+  return async <T,>(prepare: () => Promise<T>, send: (prepared: T, form: SubmittingForm) => Promise<TransactionReceipt | null>,
+    settle: (receipt: TransactionReceipt) => void | Promise<void>, fallback: string) => {
+    if (active) return
+    active = true
+    const id = ++started
+    // A receipt that arrives after hand-back completes this operation, unless the form has sent a newer write since.
+    const form: SubmittingForm = {
+      sent: () => { sent = id },
+      later: async receipt => {
+        if (sent !== id) return
+        try { await settle(receipt) } catch (cause) { if (sent === id) show.error(cause instanceof Error ? cause.message : fallback) }
+      },
+    }
+    show.error('')
+    show.preparing(true)
+    show.running(true)
+    try {
+      const prepared = await prepare()
+      show.preparing(false)
+      const receipt = await send(prepared, form)
+      if (receipt) await settle(receipt)
+    } catch (cause) { show.error(cause instanceof Error ? cause.message : fallback) }
+    finally { active = false; show.preparing(false); show.running(false) }
+  }
+}

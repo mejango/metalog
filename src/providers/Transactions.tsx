@@ -11,7 +11,7 @@ import {
   type ReviewedRunStatus, type ReviewModel, type WriteHoldClient, type WriteHoldState,
 } from '@bananapus/nana-sdk-core/review'
 import { HeldWritesNotice, useHeldWrites, useReviewedRun } from '@bananapus/nana-sdk-core/review/react'
-import { exclusive, heldSuccess, holds, reviewedAction, runOutcome, settledReceipt, type PreparedTransaction, type SubmittingForm } from '@/lib/transaction'
+import { exclusive, formRuns, heldSuccess, holds, reviewedAction, runOutcome, settledReceipt, type PreparedTransaction, type SubmittingForm } from '@/lib/transaction'
 import { chainForId, publicClientForChain, SUPPORTED_CHAINS } from '@/lib/wallet'
 import { rememberMarket } from '@/lib/recent-markets'
 import { TransactionReview } from '@/components/TransactionReview'
@@ -42,35 +42,7 @@ export function usePreparedWrite() {
   const [preparing, setPreparing] = useState(false)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState('')
-  const active = useRef(false)
-  /** Operations started, and the latest whose write was sent: a refused or cancelled retry leaves the earlier one current. */
-  const started = useRef(0)
-  const sent = useRef(0)
-  const run = useCallback(async <T,>(prepare: () => Promise<T>,
-    send: (prepared: T, form: SubmittingForm) => Promise<TransactionReceipt | null>,
-    settle: (receipt: TransactionReceipt) => void | Promise<void>, fallback: string) => {
-    if (active.current) return
-    active.current = true
-    const id = ++started.current
-    // A receipt that arrives after hand-back completes this operation, unless the form has sent a newer write since.
-    const form: SubmittingForm = {
-      sent: () => { sent.current = id },
-      later: async receipt => {
-        if (sent.current !== id) return
-        try { await settle(receipt) } catch (cause) { if (sent.current === id) setError(cause instanceof Error ? cause.message : fallback) }
-      },
-    }
-    setError('')
-    setPreparing(true)
-    setRunning(true)
-    try {
-      const prepared = await prepare()
-      setPreparing(false)
-      const receipt = await send(prepared, form)
-      if (receipt) await settle(receipt)
-    } catch (cause) { setError(cause instanceof Error ? cause.message : fallback) }
-    finally { active.current = false; setPreparing(false); setRunning(false) }
-  }, [])
+  const [run] = useState(() => formRuns({ preparing: setPreparing, running: setRunning, error: setError }))
   return { preparing, running, error, setError, run }
 }
 
