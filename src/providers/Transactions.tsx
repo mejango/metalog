@@ -11,7 +11,7 @@ import {
   type ReviewedRunStatus, type ReviewModel, type WriteHoldClient, type WriteHoldState,
 } from '@bananapus/nana-sdk-core/review'
 import { HeldWritesNotice, useHeldWrites, useReviewedRun } from '@bananapus/nana-sdk-core/review/react'
-import { exclusive, holds, reviewedAction, runOutcome, type PreparedTransaction } from '@/lib/transaction'
+import { exclusive, holds, reviewedAction, runOutcome, settledReceipt, type PreparedTransaction } from '@/lib/transaction'
 import { chainForId, publicClientForChain, SUPPORTED_CHAINS } from '@/lib/wallet'
 import { rememberMarket } from '@/lib/recent-markets'
 import { TransactionReview } from '@/components/TransactionReview'
@@ -131,12 +131,16 @@ export function Transactions({ children }: PropsWithChildren) {
 
   /** Settlements applied from a hash, by chain and hash: a follow, a hash entry and a view can each report one. */
   const applied = useRef(new Set<string>())
+  /** Never rejects: its receipt is read until it reads, and a failure to apply is reported and left for the next report. */
   const settledHash = useCallback(async (chainId: number, hash: Hex) => {
     const key = `${chainId}:${hash.toLowerCase()}`
     if (applied.current.has(key)) return
     applied.current.add(key)
-    try { await settled(chainId, await publicClientForChain(chainId).getTransactionReceipt({ hash })) }
-    catch (cause) { applied.current.delete(key); throw cause }
+    try { await settled(chainId, await settledReceipt(publicClientForChain(chainId), hash, setUnchecked)) }
+    catch (cause) {
+      applied.current.delete(key)
+      setUnchecked(cause instanceof Error ? cause.message : 'This transaction’s result could not be applied here.')
+    }
   }, [settled])
 
   /** A form's write is in review or sending: another form's handoff is refused, not left behind a replaced review. */
@@ -198,7 +202,7 @@ function HeldOnChain({ chainId, account, onSettled, running, shown }: {
     const stop = new AbortController()
     for (const { handle } of holds.list({ account, chainId })) {
       void followHeldWrite(handle, client, { signal: stop.signal }).then(end => {
-        if (end?.status === 'clear' && end.settled && 'hash' in end.settled && end.settled.result === 'success') void onSettled(chainId, end.settled.hash).catch(() => undefined)
+        if (end?.status === 'clear' && end.settled && 'hash' in end.settled && end.settled.result === 'success') void onSettled(chainId, end.settled.hash)
       }, () => undefined)
     }
     return () => stop.abort()
@@ -206,7 +210,7 @@ function HeldOnChain({ chainId, account, onSettled, running, shown }: {
   // A write that settled before this list followed it (mined while away): its view still carries the success.
   const successes = items.flatMap(({ view }) => view.settled && 'hash' in view.settled && view.settled.result === 'success' ? [view.settled.hash] : []).join('|')
   useEffect(() => {
-    for (const hash of successes ? successes.split('|') as Hex[] : []) void onSettled(chainId, hash).catch(() => undefined)
+    for (const hash of successes ? successes.split('|') as Hex[] : []) void onSettled(chainId, hash)
   }, [successes, chainId, onSettled])
   // As revnet lists them: every state the hold shows; the open run's write is in its own card.
   const listed = items.filter(item => !(item.view.state && item.view.state.status !== 'clear' && item.view.state.record.id === shown))

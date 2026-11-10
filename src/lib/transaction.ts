@@ -1,5 +1,5 @@
 import { keccak256, stringToHex, type Address, type Hex, type PublicClient, type TransactionReceipt } from 'viem'
-import { createWriteHold, ReviewLineError, writeIntentKey, type ReviewedAction, type ReviewedResult } from '@bananapus/nana-sdk-core/review'
+import { createWriteHold, RECEIPT_RETRY_MS, ReviewLineError, writeIntentKey, type ReviewedAction, type ReviewedResult } from '@bananapus/nana-sdk-core/review'
 import { REVIEWED_RUN_BUSY_LINE, type ReviewedRunFailed, type ReviewedRunReceipt } from '@bananapus/nana-sdk-core/review/react'
 import { encodeMarketDefinition, type MarketDefinition } from '@/domain/market'
 
@@ -56,6 +56,24 @@ export type RunEnd = ReviewedResult | ReviewedRunReceipt | ReviewedRunFailed | n
 /** The line for a mined write whose receipt could not be read here: the write still went through. */
 const uncheckedLine = (cause: unknown) =>
   `Transaction confirmed. Its receipt could not be read here: ${cause instanceof Error ? cause.message : 'the read failed.'}`
+
+/**
+ * A settled write's receipt, read again every few seconds until it reads: a settlement is never dropped for a failed
+ * read. Each failure is reported, and a read that succeeds clears the report.
+ */
+export async function settledReceipt(client: Pick<PublicClient, 'getTransactionReceipt'>, hash: Hex, report: (line: string) => void,
+  retryMs = RECEIPT_RETRY_MS): Promise<TransactionReceipt> {
+  for (;;) {
+    try {
+      const receipt = await client.getTransactionReceipt({ hash })
+      report('')
+      return receipt
+    } catch (cause) {
+      report(uncheckedLine(cause))
+      await new Promise(resolve => setTimeout(resolve, retryMs))
+    }
+  }
+}
 
 /**
  * What a run means for its form: the mined receipt, or null when nothing mined yet. A write still confirming is handed

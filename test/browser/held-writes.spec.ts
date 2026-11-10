@@ -43,7 +43,8 @@ async function heldWrite(anvil: Anvil, held: typeof call, send: (gate: { beforeS
 }
 
 /** The account connected through an injected wallet; every app RPC read goes to the local chain. */
-async function open(page: Page, anvil: Anvil, records: Record<string, string>) {
+/** `fail` answers a JSON-RPC call with an error instead of the chain's answer, for a read the test makes fail. */
+async function open(page: Page, anvil: Anvil, records: Record<string, string>, fail: (call: { method: string; params?: unknown[] }) => boolean = () => false) {
   await page.addInitScript(({ records, account, chainId }) => {
     if (!sessionStorage.getItem('seeded')) for (const [key, value] of Object.entries(records)) localStorage.setItem(key, value)
     sessionStorage.setItem('seeded', '1')
@@ -65,6 +66,7 @@ async function open(page: Page, anvil: Anvil, records: Record<string, string>) {
     try { body = request.method() === 'POST' ? request.postDataJSON() : undefined } catch { /* not JSON */ }
     const calls = Array.isArray(body) ? body : [body]
     if (!body || !calls.every(item => item && typeof item === 'object' && 'jsonrpc' in item)) return route.continue()
+    if ((calls as { method: string; params?: unknown[] }[]).some(fail)) return route.fulfill({ status: 503, body: 'Unavailable' })
     const response = await page.request.post(anvil.url, { data: body })
     return route.fulfill({ response, headers: { 'content-type': 'application/json', 'access-control-allow-origin': '*' } })
   })
@@ -109,7 +111,8 @@ test.describe('held writes found after a reload', () => {
     await expect(page.getByLabel('Original transaction hash', { exact: true })).toHaveCount(0)
   })
 
-  test('a creation that mined while away opens its market and joins Recently opened', async ({ page }) => {
+  /** A creation of game 42 by this account that mined while the app was closed, ready to load into the page. */
+  async function minedCreation() {
     // Defifa's deployer on this chain, standing in: every call emits one LaunchGame of game 42 by this account.
     const deployer = deploymentPins.chains['84532'].deployer as Address
     const [signature, ...indexed] = encodeEventTopics({ abi: DEFIFA_ABI.DefifaDeployer, eventName: 'LaunchGame',
@@ -127,8 +130,26 @@ test.describe('held writes found after a reload', () => {
       return hash
     })
     await anvil.control.mine({ blocks: 1 })
-    await open(page, anvil, records)
+    return records
+  }
+
+  test('a creation that mined while away opens its market and joins Recently opened', async ({ page }) => {
+    await open(page, anvil, await minedCreation())
     await expect(page.getByRole('link', { name: 'Open created market', exact: true })).toHaveAttribute('href', `/markets/${baseSepolia.id}/42`)
     expect(await page.evaluate(() => localStorage.getItem('metalog:recent-markets:v1'))).toContain('42')
+  })
+
+  test('a creation that mined while away still opens its market when the receipt reads after it settled fail for a while', async ({ page }) => {
+    // The hold reads the transaction, its receipt and its block to settle it; the app's own receipt reads come after,
+    // and the first three fail (more than the transport's own retry absorbs).
+    let settledRead = false
+    let failed = 0
+    await open(page, anvil, await minedCreation(), call => {
+      if (call.method === 'eth_getBlockByNumber') settledRead = true
+      return settledRead && call.method === 'eth_getTransactionReceipt' && failed++ < 3
+    })
+    await expect(page.getByRole('link', { name: 'Open created market', exact: true })).toHaveAttribute('href', `/markets/${baseSepolia.id}/42`, { timeout: 20_000 })
+    expect(await page.evaluate(() => localStorage.getItem('metalog:recent-markets:v1'))).toContain('42')
+    expect(failed).toBeGreaterThan(3)
   })
 })
