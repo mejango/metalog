@@ -349,6 +349,55 @@ describe('a retry once the form\'s handed-back write completes', () => {
   }, 10_000)
 })
 
+describe('a form whose wallet reply was lost', () => {
+  it('completes (closing the form) once its write is recovered from the hash; a send refused meanwhile neither sends nor completes its own form', async () => {
+    confirmEveryReview()
+    const h = harness()
+    const intent = marketIntent(marketA)
+    const call = reviewedAction(write('0x12345678'), intent).calls[0]
+    const lost = numberToHex(99, { size: 32 })
+    // The wallet broadcasts the write, then its reply is lost: the run fails with the write held without a hash.
+    h.setReply(async tx => {
+      h.chain.txs.push({ hash: lost, nonce: 7, to: tx.to, input: tx.data, value: tx.value })
+      throw new Error('The wallet connection closed.')
+    })
+    const stop = new AbortController()
+    const deps = { adapter: h.adapter, hold: h.hold, clientFor: () => h.client as unknown as PublicClient }
+    /** A form on this market and its submit as the provider runs it: the runner's failure is its result, not a throw. */
+    const formOf = () => {
+      const completed = vi.fn()
+      const run = formRuns({ preparing: () => {}, running: () => {}, error: () => {} })
+      const submit = () => run(async () => write('0x12345678'), async (prepared, form) => {
+        const handle = openStepHold(h.hold, account, false, call)
+        const before = handle.peek().reservation
+        const ran = await sendReviewed({ ...reviewedAction(prepared, intent), assertWriteState: () => refuseStale(form) }, deps)
+          .catch(failure => ({ status: 'failed' as const, error: 'The transaction failed.', failure }))
+        return runOutcome(ran, h.client as never, async () => {}, vi.fn(), form,
+          heldWrite(handle, h.client as never, { signal: stop.signal, pollMs: 5, before }))
+      }, completed, 'failed')
+      return { completed, submit }
+    }
+    const original = formOf(), other = formOf()
+    await original.submit()
+    expect(h.adapter.sendTransaction).toHaveBeenCalledTimes(1)
+    await expect(h.heldUnder(intent)!.handle.state(h.client as never)).resolves.toMatchObject({ status: 'held-no-hash' })
+    // The unchanged form, and another form of the market, send while the write is held: the hold refuses both.
+    h.setReply(h.mine)
+    await original.submit()
+    await other.submit()
+    expect(h.adapter.sendTransaction).toHaveBeenCalledTimes(1)
+    // The original mines; the user enters its hash from the wallet and recovery settles it: the form completes, once.
+    h.chain.head += 1n
+    h.chain.txs.find(tx => tx.hash === lost)!.block = h.chain.head
+    await expect(h.heldUnder(intent)!.handle.attachHash(h.client as never, lost)).resolves.toMatchObject({ status: 'clear' })
+    await vi.waitFor(() => expect(original.completed).toHaveBeenCalledTimes(1), { timeout: 6_000 })
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(other.completed).not.toHaveBeenCalled()
+    expect(h.adapter.sendTransaction).toHaveBeenCalledTimes(1)
+    stop.abort()
+  }, 10_000)
+})
+
 describe('one handoff to the shared runner at a time', () => {
   it('refuses a second handoff while one reviews or sends, and takes the next once it ends', async () => {
     const open = { current: false }

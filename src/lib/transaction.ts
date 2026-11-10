@@ -1,6 +1,6 @@
 import { keccak256, stringToHex, type Address, type Hex, type PublicClient, type TransactionReceipt } from 'viem'
 import {
-  createWriteHold, followHeldWrite, RECEIPT_RETRY_MS, ReviewLineError, TransactionReviewCancelledError, writeIntentKey,
+  createWriteHold, followHeldWrite, RECEIPT_RETRY_MS, ReviewLineError, TransactionReviewCancelledError, WriteHeldError, writeIntentKey,
   type ReviewedAction, type ReviewedResult, type WriteHoldClient, type WriteHoldHandle,
 } from '@bananapus/nana-sdk-core/review'
 import { REVIEWED_RUN_BUSY_LINE, type ReviewedRunFailed, type ReviewedRunReceipt } from '@bananapus/nana-sdk-core/review/react'
@@ -78,25 +78,31 @@ export async function settledReceipt(client: Pick<PublicClient, 'getTransactionR
   }
 }
 
-/** A write handed back still confirming, by its own reservation, whatever later reservation of its intent replaced it. */
-export type HandedBack = { succeeded: () => boolean; followed: () => Promise<Hex | null> }
+/**
+ * A write handed back still confirming, by its own reservation, whatever later reservation of its intent replaced it.
+ * `reserved`: the run made that reservation (not the one held before it), so even a failed run sent it.
+ */
+export type HandedBack = { reserved: boolean; succeeded: () => boolean; followed: () => Promise<Hex | null> }
 
 /**
  * A handed-back write by its own reservation: whether its saved settlement is a success now (in this tab or another),
  * and its success's hash once it settles, acknowledged, as the run would have acknowledged it; null for a failure, a
  * release or `signal` aborted. If the acknowledgement fails, the hold keeps offering "Send it again" for the user.
+ * `before` is the reservation the hold showed before the run.
  */
-export function heldWrite(handle: WriteHoldHandle, client: WriteHoldClient, options: { signal: AbortSignal; pollMs?: number }): HandedBack {
+export function heldWrite(handle: WriteHoldHandle, client: WriteHoldClient,
+  options: { signal: AbortSignal; pollMs?: number; before?: string }): HandedBack {
   const reservation = handle.peek().reservation
   const success = () => {
     const settled = reservation ? handle.settlementOf(reservation) : undefined
     return settled && 'hash' in settled && settled.result === 'success' ? settled : undefined
   }
   return {
+    reserved: !!reservation && reservation !== options.before,
     succeeded: () => !!success(),
     async followed() {
       if (!reservation) return null
-      await followHeldWrite(handle, client, { ...options, reservation })
+      await followHeldWrite(handle, client, { signal: options.signal, pollMs: options.pollMs, reservation })
       const settled = success()
       if (!settled) return null
       await handle.acknowledge(settled).catch(() => null)
@@ -123,12 +129,15 @@ export type SubmittingForm = {
  * on the replaceable run, so a refused retry keeps it: once it settles its receipt applies and completes `form`. A mined
  * write is the outcome, as the hold settled it from the exact call's receipt (no app effect check, as in jbm and revnet);
  * `apply` runs its effects, and a failed receipt read is reported, never thrown, so the form never offers to send it again.
+ * A failed run that left its own new reservation held (a wallet reply lost after the broadcast) is handed back the same
+ * way, so recovering it from its hash completes `form`; a run refused by an existing hold binds nothing.
  */
 export async function runOutcome(ran: RunEnd, client: Pick<PublicClient, 'getTransactionReceipt'>,
   apply: (receipt: TransactionReceipt) => Promise<void>, report: (line: string) => void,
   form?: SubmittingForm, held?: HandedBack): Promise<TransactionReceipt | null> {
-  if (ran?.status === 'receipt' || ran?.status === 'done') form?.sent()
-  if (ran?.status === 'receipt') {
+  const heldFailure = ran?.status === 'failed' && !!held?.reserved && !(ran.failure instanceof WriteHeldError)
+  if (ran?.status === 'receipt' || ran?.status === 'done' || heldFailure) form?.sent()
+  if (ran?.status === 'receipt' || heldFailure) {
     if (held) form?.handedBack(held.succeeded)
     void held?.followed().then(async hash => {
       if (!hash) return

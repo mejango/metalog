@@ -132,6 +132,9 @@ export function Transactions({ children }: PropsWithChildren) {
     setRunChain(prepared.chainId)
     const action = reviewedAction(prepared, intent)
     const client = publicClientForChain(prepared.chainId)
+    const hold = openStepHold(holds, prepared.account, false, action.calls[0])
+    // The reservation held before this run: one held after it that differs is this run's own, even when it failed.
+    const before = hold.peek().reservation
     try {
       const ran = await runner.run({
         ...action,
@@ -143,8 +146,7 @@ export function Transactions({ children }: PropsWithChildren) {
         },
       })
       return await runOutcome(ran, client, receipt => settled(prepared.chainId, receipt), setUnchecked, form,
-        heldWrite(openStepHold(holds, prepared.account, false, action.calls[0]), client as unknown as WriteHoldClient,
-          { signal: new AbortController().signal }))
+        heldWrite(hold, client as unknown as WriteHoldClient, { signal: new AbortController().signal, before }))
     } finally { aborts.current.delete(abort); setSending(false) }
   }), [runner, settled])
 
