@@ -1,7 +1,7 @@
 import { keccak256, stringToHex, type Address, type Hex, type PublicClient, type TransactionReceipt } from 'viem'
 import {
   createWriteHold, followHeldWrite, RECEIPT_RETRY_MS, ReviewLineError, TransactionReviewCancelledError, writeIntentKey,
-  type ReviewedAction, type ReviewedResult, type WriteHoldClient, type WriteHoldHandle, type WriteHoldSettled, type WriteHoldState,
+  type ReviewedAction, type ReviewedResult, type WriteHoldClient, type WriteHoldHandle,
 } from '@bananapus/nana-sdk-core/review'
 import { REVIEWED_RUN_BUSY_LINE, type ReviewedRunFailed, type ReviewedRunReceipt } from '@bananapus/nana-sdk-core/review/react'
 import { encodeMarketDefinition, type MarketDefinition } from '@/domain/market'
@@ -78,40 +78,40 @@ export async function settledReceipt(client: Pick<PublicClient, 'getTransactionR
   }
 }
 
+/** A write handed back still confirming, by its own reservation, whatever later reservation of its intent replaced it. */
+export type HandedBack = { succeeded: () => boolean; followed: () => Promise<Hex | null> }
+
 /**
- * How a handed-back write's own reservation settled, taken when the hold settles it (its event, or this follow's own
- * read), before anything acknowledges it or another reservation replaces it: the hash of a success, else null (a
- * failure, a release, or `signal` aborted). `onSuccess` hears a success at that moment.
+ * A handed-back write by its own reservation: whether its saved settlement is a success now (in this tab or another),
+ * and its success's hash once it settles, acknowledged, as the run would have acknowledged it; null for a failure, a
+ * release or `signal` aborted. If the acknowledgement fails, the hold keeps offering "Send it again" for the user.
  */
-export async function heldSuccess(handle: WriteHoldHandle, client: WriteHoldClient,
-  options: { signal: AbortSignal; pollMs?: number; onSuccess?: () => void }): Promise<Hex | null> {
+export function heldWrite(handle: WriteHoldHandle, client: WriteHoldClient, options: { signal: AbortSignal; pollMs?: number }): HandedBack {
   const reservation = handle.peek().reservation
-  if (!reservation) return null
-  const stop = new AbortController()
-  let settled: WriteHoldSettled | undefined
-  const take = (state: WriteHoldState | null) => {
-    if (settled || state?.status !== 'clear' || state.reservation !== reservation || !state.settled) return
-    settled = state.settled
-    if (settled.result === 'success') options.onSuccess?.()
-    stop.abort()
+  const success = () => {
+    const settled = reservation ? handle.settlementOf(reservation) : undefined
+    return settled && 'hash' in settled && settled.result === 'success' ? settled : undefined
   }
-  const unsubscribe = handle.subscribe(take)
-  try { take(await followHeldWrite(handle, client, { signal: AbortSignal.any([options.signal, stop.signal]), pollMs: options.pollMs })) }
-  finally { unsubscribe() }
-  const success = settled as WriteHoldSettled | undefined // set by `take`, which TypeScript's narrowing can't see
-  if (!success || !('hash' in success) || success.result !== 'success') return null
-  // Its form completes with it, so it is shown, as the run would have acknowledged it. If that write fails, the hold
-  // keeps offering "Send it again" for the user to answer, as the SDK shows any success seen while away.
-  await handle.acknowledge(success).catch(() => null)
-  return success.hash
+  return {
+    succeeded: () => !!success(),
+    async followed() {
+      if (!reservation) return null
+      await followHeldWrite(handle, client, { ...options, reservation })
+      const settled = success()
+      if (!settled) return null
+      await handle.acknowledge(settled).catch(() => null)
+      return settled.hash
+    },
+  }
 }
 
 /**
- * The form a run came from: told when its write was sent, completed when a handed-back write settles (`complete`, at once)
- * and its receipt arrives (`later`). A send it began before that completion is `stale`.
+ * The form a run came from: told when its write was sent and when it was handed back still confirming, completed when
+ * that write succeeds (`complete`, at once) and its receipt arrives (`later`). A send it began before that is `stale`.
  */
 export type SubmittingForm = {
   sent: () => void
+  handedBack: (succeeded: () => boolean) => void
   complete: () => void
   stale: () => boolean
   later: (receipt: TransactionReceipt) => void | Promise<void>
@@ -119,18 +119,20 @@ export type SubmittingForm = {
 
 /**
  * What a run means for its form: the mined receipt, or null when nothing mined yet. A write still confirming is handed
- * back at once (its hold refuses the same intent until it settles). `follow` waits on that write's own reservation, not
+ * back at once (its hold refuses the same intent until it settles). `held` follows that write's own reservation, not
  * on the replaceable run, so a refused retry keeps it: once it settles its receipt applies and completes `form`. A mined
  * write is the outcome, as the hold settled it from the exact call's receipt (no app effect check, as in jbm and revnet);
  * `apply` runs its effects, and a failed receipt read is reported, never thrown, so the form never offers to send it again.
  */
 export async function runOutcome(ran: RunEnd, client: Pick<PublicClient, 'getTransactionReceipt'>,
   apply: (receipt: TransactionReceipt) => Promise<void>, report: (line: string) => void,
-  form?: SubmittingForm, follow?: (onSuccess: () => void) => Promise<Hex | null>): Promise<TransactionReceipt | null> {
+  form?: SubmittingForm, held?: HandedBack): Promise<TransactionReceipt | null> {
   if (ran?.status === 'receipt' || ran?.status === 'done') form?.sent()
   if (ran?.status === 'receipt') {
-    void follow?.(() => form?.complete()).then(async hash => {
+    if (held) form?.handedBack(held.succeeded)
+    void held?.followed().then(async hash => {
       if (!hash) return
+      form?.complete()
       const receipt = await settledReceipt(client, hash, report)
       // Its form completes even when this tab's effects fail to apply: the write already succeeded.
       await apply(receipt).catch(cause => report(uncheckedLine(cause)))
@@ -163,15 +165,19 @@ export function formRuns(show: { preparing: (on: boolean) => void; running: (on:
   let completed = 0
   /** A handed-back write succeeded and its receipt is still being read: the form starts nothing until it completes. */
   let closing = false
+  /** The form's write handed back still confirming: whether the hold saved it as a success, in this tab or another. */
+  let handedBack: (() => boolean) | undefined
+  const closed = () => closing || !!handedBack?.()
   return async <T,>(prepare: () => Promise<T>, send: (prepared: T, form: SubmittingForm) => Promise<TransactionReceipt | null>,
     settle: (receipt: TransactionReceipt) => void | Promise<void>, fallback: string, succeeded?: () => void) => {
-    if (active || closing) return
+    if (active || closed()) return
     active = true
     const id = ++started
     const generation = completed
     // A receipt that arrives after hand-back completes this operation, unless the form has sent a newer write since.
     const form: SubmittingForm = {
       sent: () => { sent = id },
+      handedBack: succeeded => { if (sent === id) handedBack = succeeded },
       // At the success itself, before any receipt read: the draft that sent it is closed and never sendable again.
       complete: () => {
         if (sent !== id) return
@@ -180,11 +186,11 @@ export function formRuns(show: { preparing: (on: boolean) => void; running: (on:
         show.running(true)
         succeeded?.()
       },
-      stale: () => completed !== generation,
+      stale: () => completed !== generation || closed(),
       later: async receipt => {
         if (sent !== id) return
         try { await settle(receipt) } catch (cause) { if (sent === id) show.error(cause instanceof Error ? cause.message : fallback) }
-        finally { closing = false; show.running(false) }
+        finally { closing = false; handedBack = undefined; show.running(false) }
       },
     }
     show.error('')

@@ -6,7 +6,7 @@ import {
 import type { MarketDefinition } from '../src/domain/market'
 import { REVIEWED_RUN_BUSY_LINE } from '@bananapus/nana-sdk-core/review/react'
 import {
-  creationIntent, exclusive, formRuns, heldSuccess, marketIntent, refuseStale, reviewedAction, runOutcome, type PreparedTransaction,
+  creationIntent, exclusive, formRuns, heldWrite, marketIntent, refuseStale, reviewedAction, runOutcome, type PreparedTransaction,
 } from '../src/lib/transaction'
 
 const account = '0x0000000000000000000000000000000000000011' as Address
@@ -176,9 +176,9 @@ describe('a run\'s outcome for its form', () => {
     const handedBack = { status: 'receipt' as const, step: 0, hash: sent, ended: async () => null }
     const stop = new AbortController()
     const order: string[] = []
-    const form = { sent: vi.fn(), complete: vi.fn(), stale: () => false, later: vi.fn(async () => { order.push('form') }) }
+    const form = { sent: vi.fn(), handedBack: vi.fn(), complete: vi.fn(), stale: () => false, later: vi.fn(async () => { order.push('form') }) }
     const outcome = runOutcome(handedBack, h.client as never, async () => { order.push('apply') }, vi.fn(), form,
-      () => heldSuccess(handle, h.client as never, { signal: stop.signal, pollMs: 5 }))
+      heldWrite(handle, h.client as never, { signal: stop.signal, pollMs: 5 }))
     await expect(outcome).resolves.toBeNull()
     expect(form.sent).toHaveBeenCalledTimes(1)
     // A retry of the same transfer is refused by the hold and sends nothing.
@@ -202,9 +202,9 @@ describe('a run\'s outcome for its form', () => {
     h.chain.txs.push({ hash: sent, nonce: 7, to: terminal, input: '0x12345678', value: 7n })
     const handedBack = { status: 'receipt' as const, step: 0, hash: sent, ended: async () => null }
     const stop = new AbortController()
-    const form = { sent: vi.fn(), complete: vi.fn(), stale: () => false, later: vi.fn(async () => {}) }
+    const form = { sent: vi.fn(), handedBack: vi.fn(), complete: vi.fn(), stale: () => false, later: vi.fn(async () => {}) }
     await runOutcome(handedBack, h.client as never, async () => {}, vi.fn(), form,
-      () => heldSuccess(handle, h.client as never, { signal: stop.signal }))
+      heldWrite(handle, h.client as never, { signal: stop.signal }))
     await new Promise(resolve => setTimeout(resolve, 200)) // the follow's first look ends; its next is seconds away
     // Between this follow's looks the original mines; another reader of the hold (the held-writes notice) settles and
     // acknowledges it, and another form reserves the market for a send the wallet then rejects.
@@ -219,6 +219,54 @@ describe('a run\'s outcome for its form', () => {
     expect(rejected).toBeInstanceOf(Error)
     expect(rejected).not.toBeInstanceOf(WriteHeldError)
     // The original's form still completes, once.
+    await vi.waitFor(() => expect(form.later).toHaveBeenCalledTimes(1), { timeout: 6_000 })
+    stop.abort()
+  }, 10_000)
+})
+
+describe('a handed-back write settled in another tab', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('completes its form after another tab settled, acknowledged and replaced it while this tab slept', async () => {
+    confirmEveryReview()
+    const h = harness()
+    const intent = marketIntent(marketA)
+    const call = reviewedAction(write('0x12345678'), intent).calls[0]
+    // Two tabs, each with its own memory and hold, share one browser storage. Its events wait until this tab wakes.
+    const shared = new Map<string, string>()
+    const queued: string[] = []
+    const durable = {
+      getItem: (key: string) => shared.get(key) ?? null,
+      setItem: (key: string, value: string) => { shared.set(key, value); queued.push(key) },
+      removeItem: (key: string) => { shared.delete(key); queued.push(key) },
+    }
+    const listeners = new Set<(event: { key: string }) => void>()
+    vi.stubGlobal('addEventListener', (type: string, listener: (event: { key: string }) => void) => { if (type === 'storage') listeners.add(listener) })
+    vi.stubGlobal('removeEventListener', (_type: string, listener: (event: { key: string }) => void) => { listeners.delete(listener) })
+    const tab = () => createWriteHold({ storage: createHeldWriteStorage({ durable: () => durable, memory: new Map() }) })
+    const here = tab(), there = tab()
+    const sent = numberToHex(99, { size: 32 })
+    const handle = openStepHold(here, account, false, call)
+    await handle.send(h.client as never, async gate => { await gate.beforeSend(); gate.afterSubmit(sent); return sent })
+    h.chain.txs.push({ hash: sent, nonce: 7, to: terminal, input: '0x12345678', value: 7n })
+    const stop = new AbortController()
+    const form = { sent: vi.fn(), handedBack: vi.fn(), complete: vi.fn(), stale: () => false, later: vi.fn(async () => {}) }
+    await runOutcome({ status: 'receipt', step: 0, hash: sent, ended: async () => null }, h.client as never, async () => {}, vi.fn(), form,
+      heldWrite(openStepHold(here, account, false, call), h.client as never, { signal: stop.signal }))
+    await new Promise(resolve => setTimeout(resolve, 200)) // this tab's first look ends; it sleeps until the next
+    queued.length = 0
+    // The other tab sees the write mine, settles and acknowledges it, then reserves the market for a send the wallet rejects.
+    h.chain.head += 1n
+    h.chain.txs.find(tx => tx.hash === sent)!.block = h.chain.head
+    const other = openStepHold(there, account, false, call)
+    const cleared = await followHeldWrite(other, h.client as never, { signal: stop.signal, fastMs: 5 })
+    if (cleared?.status === 'clear' && cleared.settled && 'hash' in cleared.settled) await other.acknowledge(cleared.settled)
+    h.setReply(async () => { throw Object.assign(new Error('User rejected the request.'), { code: 4001 }) })
+    const rejected = await sendReviewed(reviewedAction(write('0x12345678'), intent), { adapter: h.adapter, hold: there,
+      clientFor: () => h.client as unknown as PublicClient }).catch(cause => cause)
+    expect(rejected).not.toBeInstanceOf(WriteHeldError)
+    // This tab wakes: its queued events all read the storage as it is now.
+    for (const key of queued.splice(0)) for (const listener of listeners) listener({ key })
     await vi.waitFor(() => expect(form.later).toHaveBeenCalledTimes(1), { timeout: 6_000 })
     stop.abort()
   }, 10_000)
@@ -239,7 +287,7 @@ describe('a retry once the form\'s handed-back write completes', () => {
       h.chain.txs.push({ hash: sent, nonce: 7, to: terminal, input: '0x12345678', value: 7n })
       return runOutcome({ status: 'receipt', step: 0, hash: sent, ended: async () => null }, (appReceipts?.(h.client) ?? h.client) as never,
         async () => {}, vi.fn(), form,
-        onSuccess => heldSuccess(handle, h.client as never, { signal: stop.signal, pollMs: 5, onSuccess }))
+        heldWrite(handle, h.client as never, { signal: stop.signal, pollMs: 5 }))
     }, completed, 'failed')
     await new Promise(resolve => setTimeout(resolve, 200)) // the follow's first look ends
     const mineOriginal = () => { h.chain.head += 1n; h.chain.txs.find(tx => tx.hash === sent)!.block = h.chain.head }
