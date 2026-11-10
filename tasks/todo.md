@@ -215,3 +215,22 @@ Codex pass 4: both bugs came from completing the form by polling the hold's late
 Codex pass 5: (1) the success bumped the form's generation, but the draft stayed sendable until the app's receipt read finished, so a retry started in that window sent a second transfer. `formRuns` now closes the form when the success is captured (`complete`, before any receipt read): no run starts until `later` finishes, and `succeeded` resets the draft at once (the lifecycle form's row action and selection). `runOutcome` reports a failed effect apply and still completes the form, so the form can't stay closed forever. Test: "refuses a retry started after the original settled while the app still reads its receipt" (it failed first with a second `sendTransaction`). (2) Cross-tab settlement loss when the namespace is reused is assigned to SDK #296 (settlement per reservation); there is no metalog workaround. Gates: `npm run check` (182 unit), browser suite (83 passed, 1 skipped).
 
 SDK #296 (per-reservation settlement, head b66b9e6, tested from its local tarball; the dependency bump comes with its publish): `heldSuccess` and its subscribe capture are gone. `heldWrite` follows the write's own reservation (`followHeldWrite({ reservation })`) and reads its saved settlement (`settlementOf(reservation)`), which holds even after a later reservation of the market replaced it, in this tab or another. The form asks that same saved settlement at each check (run start, after `prepare()`, at the last gate before the wallet), so a success that another reader or tab acknowledged before this tab's follow looked still closes the form. Test: "completes its form after another tab settled, acknowledged and replaced it while this tab slept" (two isolated SDK storage instances sharing durable storage, with queued storage events; failed on the previous capture). Gates against the tarball: `npm run check` (183 unit), browser suite (83 passed, 1 skipped).
+
+
+# Form writes on core's useReviewedRun (pass 7)
+
+Resources: `/Users/jango/Documents/jb/v6/evm/AGENTS.md`, `/Users/jango/Documents/jb/v6/evm/tasks/lessons.md`, `/Users/jango/Documents/jb/v6/evm/workflow/ponytail/SKILL.md`, `/Users/jango/Documents/jb/v6/evm/docs/PLAN_REFINEMENT.md`; local `AGENTS.md`, `docs/DESIGN.md`. Worktree `.worktrees/sm-metalog`, branch `state-machines-3-2026-11-09`.
+
+- **Outcome:** a form completes when, and only when, its own write succeeds, however that write settles (in the run, still confirming, lost reply recovered by hash), across account switches; no local state can block later forms.
+- **System fit:** revnet's practice: each form owns a `useReviewedRun`; the run follows its own held step and shows `done` when it settles. Core's `createReviewQueue` serializes reviews (replaces `exclusive`). Provider keeps the review dialog, held-write notices with hash recovery, and receipt effects (one memoized `settle` per hash).
+- **Deleted:** `formRuns`, `runOutcome`, `heldWrite`/`HandedBack`, `SubmittingForm`, `refuseStale`, `exclusive`, the provider's single runner.
+- **Kept local (SDK gap):** a run refused by a hold the form did not make must not start, because core's run follows whatever its intent holds after any failure and would complete the wrong form. The hook checks the hold before the run, and drops its binding on a `WriteHeldError` race. Also a per-hook `completing` gate while its receipt effects apply.
+- **Verification:** failing-first pass 7 regression (account switch, newer write completes, older recovered, next submit runs); pass 5/6 regressions against the hook; `npm run check`, `test:browser`, fork lifecycle suite.
+- **Recovery:** branch only; no merge.
+
+- [x] Pass 7 regression failing on the current layer
+- [x] Hook + provider migration, local layer deleted
+- [x] Pass 5/6/7 regressions on the hook
+- [x] check, browser, fork suites; commit, push
+
+Review: the pass 7 regression failed on `formRuns` (the next submission never prepared). Forms now run through their own `useReviewedRun` (`src/lib/form-write.ts`), and reviews go through core's `createReviewQueue`. The local layer is deleted. The remaining local logic is a hold check before the run, because core's run adopts whatever its intent holds after a refused run, plus a per-form completing gate. Regressions for passes 5, 6 and 7 run against the hook, and each guard was mutation-checked. `npm run check` (179 tests), `test:browser` (83 passed, 1 skipped) and the fork lifecycle suite all pass.

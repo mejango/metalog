@@ -8,7 +8,7 @@ import { scorecardWeightsFromPercentages } from '@/domain/scorecard'
 import type { LifecycleAction, LifecycleSnapshot, ResultVoters } from '@/lib/defifa-lifecycle'
 import { chainForId } from '@/lib/wallet'
 import { useWallet } from '@/providers/Providers'
-import { usePreparedWrite, useTransactions } from '@/providers/Transactions'
+import { usePreparedWrite } from '@/providers/Transactions'
 import { marketIntent } from '@/lib/transaction'
 import { utcTime } from './MarketFacts'
 import { RangeStrip } from './RangeStrip'
@@ -27,7 +27,6 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   scorecardsPaged: boolean
 }) {
   const { address, isSigna, connect } = useWallet()
-  const transactions = useTransactions()
   const { market, positions } = lifecycle
   // Positions to burn per range, per wallet.
   const [selections, setSelections] = useState<Record<string, Record<number, number>>>({})
@@ -51,7 +50,7 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   })
   const burnCount = burning.reduce((sum, position) => sum + position.count, 0)
   const matchingWallet = !!address && lifecycle.account?.toLowerCase() === walletKey
-  const busy = running || transactions.busy
+  const busy = running
   const canAct = current && matchingWallet && !isSigna && !busy
   const explorer = chainForId(market.chainId).blockExplorers.default.url
   const scoreDraft = useMemo(() => {
@@ -76,10 +75,11 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   async function act(action: LifecycleAction) {
     if (!canAct || !address) return
     await run(async () => (await import('@/lib/defifa-lifecycle')).prepareLifecycleAction(market, action, address),
-      (prepared, form) => transactions.execute(prepared, marketIntent(market), form), onRefresh, 'The transaction could not be prepared.', () => {
+      marketIntent(market), () => {
         setRowAction(null)
         if (action.kind === 'transfer' || action.kind === 'cash-out') select({})
-      })
+        onRefresh()
+      }, 'The transaction could not be prepared.')
   }
 
   const propose = <>

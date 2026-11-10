@@ -1,49 +1,54 @@
 'use client'
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type PropsWithChildren } from 'react'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type PropsWithChildren } from 'react'
 import Link from 'next/link'
 import { useQueryClient } from '@tanstack/react-query'
 import { getAccount, getWalletClient, switchChain } from '@wagmi/core'
 import { useAccount } from 'wagmi'
 import { isHash, type Address, type Hex, type TransactionReceipt, type WalletClient } from 'viem'
 import {
-  followHeldWrite, openStepHold, registerReviewHandler, REVIEWED_ACCOUNT_CHANGED_LINE, ReviewLineError, viemWalletAdapter,
-  type ReviewedRunStatus, type ReviewModel, type WriteHoldClient, type WriteHoldState,
+  createReviewQueue, followHeldWrite, registerReviewHandler, REVIEWED_ACCOUNT_CHANGED_LINE, ReviewLineError, viemWalletAdapter,
+  type ReviewConfirmation, type ReviewedRunStatus, type ReviewPrompt, type WriteHoldClient, type WriteHoldState,
 } from '@bananapus/nana-sdk-core/review'
-import { HeldWritesNotice, useHeldWrites, useReviewedRun } from '@bananapus/nana-sdk-core/review/react'
-import { exclusive, formRuns, heldWrite, holds, refuseStale, reviewedAction, runOutcome, settledReceipt, type PreparedTransaction, type SubmittingForm } from '@/lib/transaction'
+import { HeldWritesNotice, useHeldWrites, type UseReviewedRunResult } from '@bananapus/nana-sdk-core/review/react'
+import { holds, settledReceipt } from '@/lib/transaction'
+import { useFormWrite } from '@/lib/form-write'
 import { chainForId, publicClientForChain, SUPPORTED_CHAINS } from '@/lib/wallet'
 import { rememberMarket } from '@/lib/recent-markets'
 import { TransactionReview } from '@/components/TransactionReview'
 import { wagmiConfig } from './Providers'
 
+/** What the transaction status shows for the form that ran last. */
+type RunView = {
+  line: string | null
+  error: string | null
+  hash: Hex | null
+  chainId: number | null
+  /** The hold record its run shows, so the held-writes notice does not list it twice. */
+  heldId?: string
+  exitAction: UseReviewedRunResult['exitAction']
+  sendAgainAction: UseReviewedRunResult['sendAgainAction']
+  reset: () => void
+  /** Its write succeeded: the status outlives the form (a creation opens its market). */
+  done: boolean
+}
+
 type TransactionContextValue = {
-  /**
-   * Review and send a prepared write under its intent's hold: the mined receipt once its effects apply, else null. A write
-   * handed back still confirming completes `form` once its own reservation settles.
-   */
-  execute: (prepared: PreparedTransaction, intent: string, form?: SubmittingForm) => Promise<TransactionReceipt | null>
-  busy: boolean
+  /** Reads a succeeded write's receipt and applies its effects, once per hash however it is reported. */
+  settle: (chainId: number, hash: Hex) => Promise<TransactionReceipt>
+  /** A form's run started: the status shows that form's run from now on. */
+  claim: (form: symbol) => void
+  /** A form's run as it stands; shown only while that form ran last. */
+  show: (form: symbol, view: RunView | null) => void
+  /** The form unmounted: its run ended with it, and only a success stays shown. */
+  leave: (form: symbol) => void
 }
 const TransactionContext = createContext<TransactionContextValue | null>(null)
 
-export function useTransactions() {
+function useTransactions() {
   const value = useContext(TransactionContext)
   if (!value) throw new Error('Transactions must be inside Providers.')
   return value
-}
-
-/**
- * Prepare a write, hand it to the transaction runner, then apply its confirmed receipt. One run at a time: `running` lasts
- * until the receipt's effects are applied or the write is handed back still confirming, `preparing` (the copy) ends at
- * the hand-off. A handed-back write completes the form when it mines, unless the form has started another since.
- */
-export function usePreparedWrite() {
-  const [preparing, setPreparing] = useState(false)
-  const [running, setRunning] = useState(false)
-  const [error, setError] = useState('')
-  const [run] = useState(() => formRuns({ preparing: setPreparing, running: setRunning, error: setError }))
-  return { preparing, running, error, setError, run }
 }
 
 export const EXTERNAL_WALLET_LINE = 'Defifa transactions need an external wallet. Signa currently provides sign-in only.'
@@ -68,30 +73,65 @@ const deps = {
   guard: refuseSigna,
 }
 
+/** A run reviewed under one connector sends nothing once it changes; Signa never sends. */
+function walletGate() {
+  const uid = connector()?.uid
+  return () => {
+    refuseSigna()
+    if (connector()?.uid !== uid) throw new ReviewLineError(REVIEWED_ACCOUNT_CHANGED_LINE)
+  }
+}
+
 const STATUS_LINES: Partial<Record<ReviewedRunStatus, string>> = {
   simulating: 'Checking transaction…', signing: 'Confirm in your wallet…', receipt: 'Checking confirmation…', done: 'Transaction confirmed.',
 }
 
+/**
+ * A form's writes: prepare one, review and send it in the form's own run, and once it succeeds (however it settled) apply
+ * its receipt and run `done`. Each form owns its run, as in revnet; the page's transaction status shows the form that ran
+ * last.
+ */
+export function usePreparedWrite() {
+  const { address } = useAccount()
+  const { settle, claim, show, leave } = useTransactions()
+  const [form] = useState(() => Symbol('form'))
+  const write = useFormWrite({ deps: address ? { ...deps, account: address } : null, settle, gate: walletGate })
+  const { runner } = write
+  const line = runner.status === 'held' ? runner.held?.line ?? null : runner.status === 'failed' ? null : STATUS_LINES[runner.status] ?? null
+  const error = runner.status === 'failed' ? runner.error : null
+  const heldId = runner.held?.state && runner.held.state.status !== 'clear' ? runner.held.state.record.id : undefined
+  const latest = useRef(runner)
+  useLayoutEffect(() => { latest.current = runner })
+  useEffect(() => {
+    show(form, line || error || heldId ? {
+      line, error, hash: runner.hash, chainId: write.chainId, heldId,
+      exitAction: runner.exitAction, sendAgainAction: runner.sendAgainAction, reset: () => latest.current.reset(),
+      done: runner.status === 'done',
+    } : null)
+    // The actions are the run's own for the state these keys name.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form, show, line, error, heldId, runner.hash, write.chainId, runner.exitAction?.label, runner.sendAgainAction?.label])
+  useEffect(() => () => leave(form), [form, leave])
+  const { run: start } = write
+  const run: typeof start = useCallback(async (...args) => { claim(form); await start(...args) }, [claim, form, start])
+  return { preparing: write.preparing, running: write.busy, error: write.error, setError: write.setError, run }
+}
+
 export function Transactions({ children }: PropsWithChildren) {
   const queryClient = useQueryClient()
-  const { address, connector: connected } = useAccount()
-  const runner = useReviewedRun({ ...deps, account: address })
-  const [review, setReview] = useState<{ model: ReviewModel; decide: (approved: boolean) => void } | null>(null)
+  const { address } = useAccount()
   const [created, setCreated] = useState<string | null>(null)
-  const [runChain, setRunChain] = useState<number | null>(null)
   /** A mined write whose receipt or effects could not be checked here. */
   const [unchecked, setUnchecked] = useState('')
-  /** A run is reviewing, sending or following its write in place; a write handed back still confirming is not. */
-  const [sending, setSending] = useState(false)
-  /** A run reviewed for one account or connector sends nothing once either changes. */
-  const aborts = useRef(new Set<AbortController>())
-  useEffect(() => { for (const abort of aborts.current) abort.abort() }, [address, connected?.uid])
 
-  useEffect(() => registerReviewHandler(prompt => new Promise(resolve => {
-    const decide = (approved: boolean) => { setReview(null); resolve(approved ? prompt.confirmation : null) }
-    prompt.signal.addEventListener('abort', () => decide(false), { once: true })
-    setReview({ model: prompt.model, decide })
-  })), [])
+  // One review at a time, in request order; a change of account cancels what was opened under the last one.
+  const [queue] = useState(() => createReviewQueue<ReviewPrompt, ReviewConfirmation | null>())
+  const review = useSyncExternalStore(queue.subscribe, queue.getState, queue.getState).active
+  useEffect(() => { queue.setContext({ account: address }) }, [queue, address])
+  useEffect(() => {
+    const unregister = registerReviewHandler(prompt => queue.request(prompt, { declined: null, approves: result => result !== null, signal: prompt.signal }))
+    return () => { unregister(); queue.cancelAll() }
+  }, [queue])
 
   /** What every confirmed write changes here, however it settled: the market's reads, and a created market's place in Recently opened. */
   const settled = useCallback(async (chainId: number, receipt: TransactionReceipt) => {
@@ -106,66 +146,60 @@ export function Transactions({ children }: PropsWithChildren) {
     setCreated(`/markets/${chainId}/${projectId}`)
   }, [queryClient])
 
-  /** Settlements applied from a hash, by chain and hash: a follow, a hash entry and a view can each report one. */
-  const applied = useRef(new Set<string>())
-  /** Never rejects: its receipt is read until it reads, and a failure to apply is reported and left for the next report. */
-  const settledHash = useCallback(async (chainId: number, hash: Hex) => {
+  /**
+   * One settlement per chain and hash, whoever reports it (a form's run, a follow, a hash entry): its receipt, read until
+   * it reads, with the effects applied. A failure to apply them is reported, never thrown, and left for the next report.
+   */
+  const receipts = useRef(new Map<string, Promise<TransactionReceipt>>())
+  const settle = useCallback((chainId: number, hash: Hex) => {
     const key = `${chainId}:${hash.toLowerCase()}`
-    if (applied.current.has(key)) return
-    applied.current.add(key)
-    try { await settled(chainId, await settledReceipt(publicClientForChain(chainId), hash, setUnchecked)) }
-    catch (cause) {
-      applied.current.delete(key)
-      setUnchecked(cause instanceof Error ? cause.message : 'This transaction’s result could not be applied here.')
+    let receipt = receipts.current.get(key)
+    if (!receipt) {
+      receipt = settledReceipt(publicClientForChain(chainId), hash, setUnchecked).then(async read => {
+        try { await settled(chainId, read) }
+        catch (cause) {
+          receipts.current.delete(key)
+          setUnchecked(cause instanceof Error ? cause.message : 'This transaction’s result could not be applied here.')
+        }
+        return read
+      })
+      receipts.current.set(key, receipt)
     }
+    return receipt
   }, [settled])
+  const settledHash = useCallback(async (chainId: number, hash: Hex) => { await settle(chainId, hash) }, [settle])
 
-  /** A form's write is in review or sending: another form's handoff is refused, not left behind a replaced review. */
-  const handing = useRef(false)
-  const execute = useCallback((prepared: PreparedTransaction, intent: string, form?: SubmittingForm) => exclusive(handing, async () => {
-    const uid = connector()?.uid
-    const abort = new AbortController()
-    aborts.current.add(abort)
-    setSending(true)
+  /** The form that ran last, whose run the status shows. */
+  const owner = useRef<symbol | null>(null)
+  const [status, setStatus] = useState<RunView | null>(null)
+  const claim = useCallback((form: symbol) => {
+    owner.current = form
+    setStatus(null)
     setCreated(null)
     setUnchecked('')
-    setRunChain(prepared.chainId)
-    const action = reviewedAction(prepared, intent)
-    const client = publicClientForChain(prepared.chainId)
-    const hold = openStepHold(holds, prepared.account, false, action.calls[0])
-    // The reservation held before this run: one held after it that differs is this run's own, even when it failed.
-    const before = hold.peek().reservation
-    try {
-      const ran = await runner.run({
-        ...action,
-        signal: abort.signal,
-        assertWriteState: () => {
-          refuseSigna()
-          if (connector()?.uid !== uid) throw new ReviewLineError(REVIEWED_ACCOUNT_CHANGED_LINE)
-          refuseStale(form)
-        },
-      })
-      return await runOutcome(ran, client, receipt => settled(prepared.chainId, receipt), setUnchecked, form,
-        heldWrite(hold, client as unknown as WriteHoldClient, { signal: new AbortController().signal, before }))
-    } finally { aborts.current.delete(abort); setSending(false) }
-  }), [runner, settled])
+  }, [])
+  const show = useCallback((form: symbol, view: RunView | null) => { if (owner.current === form) setStatus(view) }, [])
+  const leave = useCallback((form: symbol) => {
+    if (owner.current !== form) return
+    owner.current = null
+    setStatus(view => view?.done ? { ...view, heldId: undefined, exitAction: null, sendAgainAction: null } : null)
+  }, [])
 
-  const line = runner.status === 'held' ? runner.held?.line : runner.status === 'failed' ? null : STATUS_LINES[runner.status]
-  const hash = runner.hash
-  const explorer = hash && runChain ? chainForId(runChain).blockExplorers.default.url : undefined
-  return <TransactionContext.Provider value={{ execute, busy: sending }}>
+  const explorer = status?.hash && status.chainId ? chainForId(status.chainId).blockExplorers.default.url : undefined
+  return <TransactionContext.Provider value={{ settle, claim, show, leave }}>
     {children}
-    {review && <TransactionReview model={review.model} decide={review.decide} />}
+    {review && <TransactionReview model={review.payload.model}
+      decide={approved => void queue.finish(review.id, approved ? review.payload.confirmation : null)} />}
     {address && SUPPORTED_CHAINS.map(chain => <HeldOnChain key={chain.id} chainId={chain.id} account={address} onSettled={settledHash}
-      running={runner.busy} shown={runner.held?.state && runner.held.state.status !== 'clear' ? runner.held.state.record.id : undefined} />)}
-    {(line || runner.error || created || unchecked) && <aside id="transaction-status" tabIndex={-1} className="transaction-status" aria-label="Transaction status">
-      {line && <p role="status">{line}</p>}
-      {runner.status === 'failed' && runner.error && <p role="alert">{runner.error}</p>}
+      shown={status?.heldId} />)}
+    {(status || created || unchecked) && <aside id="transaction-status" tabIndex={-1} className="transaction-status" aria-label="Transaction status">
+      {status?.line && <p role="status">{status.line}</p>}
+      {status?.error && <p role="alert">{status.error}</p>}
       {unchecked && <p role="alert">{unchecked}</p>}
-      {hash && explorer && <p><a href={`${explorer}/tx/${hash}`} target="_blank" rel="noreferrer">View transaction</a></p>}
+      {status?.hash && explorer && <p><a href={`${explorer}/tx/${status.hash}`} target="_blank" rel="noreferrer">View transaction</a></p>}
       {created && <p><Link href={created}>Open created market</Link></p>}
-      {runner.exitAction && <button type="button" onClick={() => void runner.exitAction?.run().then(released => { if (released) runner.reset() })}>{runner.exitAction.label}</button>}
-      {runner.sendAgainAction && <button type="button" onClick={() => void runner.sendAgainAction?.run()}>{runner.sendAgainAction.label}</button>}
+      {status?.exitAction && <button type="button" onClick={() => void status.exitAction?.run().then(released => { if (released) status.reset() })}>{status.exitAction.label}</button>}
+      {status?.sendAgainAction && <button type="button" onClick={() => void status.sendAgainAction?.run()}>{status.sendAgainAction.label}</button>}
     </aside>}
   </TransactionContext.Provider>
 }
@@ -175,14 +209,14 @@ export function Transactions({ children }: PropsWithChildren) {
  * one still confirming too, and each followed until it settles, so its effects apply here too. The open run follows and
  * shows its own write.
  */
-function HeldOnChain({ chainId, account, onSettled, running, shown }: {
-  chainId: number; account: Address; onSettled: (chainId: number, hash: Hex) => Promise<void>; running: boolean; shown?: string
+function HeldOnChain({ chainId, account, onSettled, shown }: {
+  chainId: number; account: Address; onSettled: (chainId: number, hash: Hex) => Promise<void>; shown?: string
 }) {
   const client = publicClientForChain(chainId) as unknown as WriteHoldClient
   const items = useHeldWrites({ hold: holds, chainId, account, client })
   const keys = items.map(item => item.key).join('|')
   useEffect(() => {
-    if (!keys || running) return
+    if (!keys) return
     const stop = new AbortController()
     for (const { handle } of holds.list({ account, chainId })) {
       void followHeldWrite(handle, client, { signal: stop.signal }).then(end => {
@@ -190,7 +224,7 @@ function HeldOnChain({ chainId, account, onSettled, running, shown }: {
       }, () => undefined)
     }
     return () => stop.abort()
-  }, [keys, running, account, chainId, client, onSettled])
+  }, [keys, account, chainId, client, onSettled])
   // A write that settled before this list followed it (mined while away): its view still carries the success.
   const successes = items.flatMap(({ view }) => view.settled && 'hash' in view.settled && view.settled.result === 'success' ? [view.settled.hash] : []).join('|')
   useEffect(() => {
