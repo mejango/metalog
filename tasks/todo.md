@@ -181,3 +181,24 @@ Resources: as above, plus scratchpad `sm/BRIEF3.md` and `sm/sdk.md`. Branch `sta
 Review: the hold tests failed on the old module and pass. `npm run check` (174 unit), the browser suite (73 passed, 1 skipped), fork integration on Base Sepolia (5) and the lifecycle fork (17 transactions) pass against the tarball. The lifecycle fork caught one real gap, which is fixed: the run showed confirmed before the action's receipt checks finished, and a click in between was dropped silently. The action now stays disabled until they finish. A lost wallet reply stays held with no hash until the wallet's hash is attached; the hold does not find it by nonce alone. SDK gaps: Defifa owners are 721-only; `useHeldWrites` has no `onSettled`.
 
 Published SDK: package.json now pins `@bananapus/nana-sdk-core` 6.1.0 and `@me.jango/signa` 0.5.0 (the branch imports `review/react` and Signa, which 2.29.0 and the old pins lacked) and drops the unused `@bananapus/nana-sdk-connect`. Lockfile integrity matches `npm view`; after `npm ci`, `npm run check` (174 unit) and the browser suite (75 passed, 1 skipped) pass.
+
+# Wave 3 Codex pass 1 fixes (2026-11-09)
+
+Resources: as above; report scratchpad `sm/codex/metalog3-pass1.md`. Finding 1 (import legacy keys) is dismissed by jango's ruling: metalog has no legacy code.
+
+## Plan refinement
+- **Objective:** A mined write is its outcome: no post-receipt read failure re-enables a send, a still-confirming write hands the form back, every background hold (confirming too) is shown, and a lost wallet reply can be settled from the hash the wallet shows.
+- **System fit:** The Transactions provider stays the one owner of what a run means for its form; the SDK hold stays the one authority on sends, repeats (one hold per intent) and settlement. jbm/revnet: the hold's settlement is the outcome (no app effect gate); revnet lists every held state; revnet's markee recovery attaches a found hash through `handle.attachHash`.
+- **Reuse and simplicity:** Refactor first: move the run's outcome for its form into one function in `src/lib/transaction.ts` (no behavior change), then fix on it. Reuse the SDK's `HeldWritesNotice`, `attachHash` and origin/main's hash-input labels. No new dependency.
+- **Evidence and unknowns:** Code reading of SDK 6.1.0 `useReviewedRun` (acknowledges a shown done; resolves `receipt` after its in-place follow; `busy` stays true while confirming). Browser tests seed real SDK hold records against a plain local Anvil.
+- **Verification:** Unit tests on the outcome function (#2, #5) and browser tests on reload visibility (#4) and hash recovery (#3), each failing first; `npm run check`; `npm run test:browser`.
+- **Resource budget:** One worktree, suites one at a time; replan if seeding hold records across Node and the browser does not round-trip.
+
+- [x] REFACTOR: one function for a run's outcome
+- [x] FIX #2: a mined write's failed effect check reports, never re-enables its send
+- [x] FIX #5: a still-confirming write hands back the form; later settlement applies separately
+- [x] FIX #4: background holds show while confirming
+- [x] FIX #3: attach the wallet's hash to a no-hash hold
+- [ ] Gates, push (no merge)
+
+Review: each new test failed on the code before its fix. Unit (`test/transaction.test.ts`, "a run's outcome for its form"): a failed effect check or receipt read rejected the run (#2); a still-confirming run never returned (#5). Browser (`test/browser/held-writes.spec.ts`, real SDK hold records against a plain local Anvil): a confirming write found after a reload showed nothing (#4); a lost reply offered no hash input (#3). Standard practice: jbm and revnet treat the hold's settlement as the outcome with no app effect gate; revnet lists every held state; revnet's markee recovery attaches a found hash with `handle.attachHash`. The receipt effect check stays as a report in the status card; a held write settled after a reload applies the same effects without it (no reviewed request to check against). `npm run check` (177 unit), the browser suite (79 passed, 1 skipped) and the lifecycle fork (rerun alone after one local Anvil ECONNRESET under load) pass.
