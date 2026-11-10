@@ -1,5 +1,6 @@
-import { keccak256, stringToHex, type Address, type Hex, type TransactionReceipt } from 'viem'
-import { createWriteHold, writeIntentKey, type ReviewedAction } from '@bananapus/nana-sdk-core/review'
+import { keccak256, stringToHex, type Address, type Hex, type PublicClient, type TransactionReceipt } from 'viem'
+import { createWriteHold, writeIntentKey, type ReviewedAction, type ReviewedResult } from '@bananapus/nana-sdk-core/review'
+import type { ReviewedRunFailed, ReviewedRunReceipt } from '@bananapus/nana-sdk-core/review/react'
 import { encodeMarketDefinition, type MarketDefinition } from '@/domain/market'
 
 /** A product adapter owns calldata, current-state checks and its receipt effects. */
@@ -39,4 +40,18 @@ export function reviewedAction(prepared: PreparedTransaction, intent: string): R
     context: details.map(detail => ({ ...detail })),
     ...(reverify ? { reverify: () => reverify() } : {}),
   }
+}
+
+/** How `useReviewedRun` ends a run. */
+export type RunEnd = ReviewedResult | ReviewedRunReceipt | ReviewedRunFailed | null
+
+/** What a run means for its form: the confirmed receipt once its effects check and `apply` ran, else null. */
+export async function runOutcome(ran: RunEnd, prepared: PreparedTransaction, client: Pick<PublicClient, 'getTransactionReceipt'>,
+  apply: (receipt: TransactionReceipt) => Promise<void>): Promise<TransactionReceipt | null> {
+  const done = ran?.status === 'receipt' ? await ran.ended() : ran
+  if (done?.status !== 'done') return null
+  const receipt = done.receipts.at(-1) ?? await client.getTransactionReceipt({ hash: done.hashes.at(-1)! })
+  await prepared.verifyReceipt?.(receipt)
+  await apply(receipt)
+  return receipt
 }

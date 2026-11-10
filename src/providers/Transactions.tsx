@@ -11,7 +11,7 @@ import {
   type ReviewedRunStatus, type ReviewModel, type WriteHoldClient,
 } from '@bananapus/nana-sdk-core/review'
 import { HeldWritesNotice, useHeldWrites, useReviewedRun } from '@bananapus/nana-sdk-core/review/react'
-import { holds, reviewedAction, type PreparedTransaction } from '@/lib/transaction'
+import { holds, reviewedAction, runOutcome, type PreparedTransaction } from '@/lib/transaction'
 import { chainForId, publicClientForChain, SUPPORTED_CHAINS } from '@/lib/wallet'
 import { rememberMarket } from '@/lib/recent-markets'
 import { TransactionReview } from '@/components/TransactionReview'
@@ -132,12 +132,7 @@ export function Transactions({ children }: PropsWithChildren) {
           if (connector()?.uid !== uid) throw new ReviewLineError(REVIEWED_ACCOUNT_CHANGED_LINE)
         },
       })
-      const done = ran?.status === 'receipt' ? await ran.ended() : ran
-      if (done?.status !== 'done') return null
-      const receipt = done.receipts.at(-1) ?? await publicClientForChain(prepared.chainId).getTransactionReceipt({ hash: done.hashes.at(-1)! })
-      await prepared.verifyReceipt?.(receipt)
-      await settled(prepared.chainId, receipt)
-      return receipt
+      return await runOutcome(ran, prepared, publicClientForChain(prepared.chainId), receipt => settled(prepared.chainId, receipt))
     } finally { aborts.current.delete(abort) }
   }, [runner, settled])
 
