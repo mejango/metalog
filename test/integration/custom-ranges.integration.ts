@@ -11,6 +11,7 @@ import {
 import { creationIntent, marketIntent } from '../../src/lib/transaction'
 import { loadMarketMetadata } from '../../src/lib/market-metadata'
 import { forkSender, startFork } from './fork'
+import { checkReceiptEffects } from './effects'
 
 it('creates unequal ranges and recovers their curve-derived mint without sending twice on a Base Sepolia fork', async () => {
   const chainId = 84532
@@ -75,7 +76,7 @@ it('creates unequal ranges and recovers their curve-derived mint without sending
     await expect(sender.send(request, intent)).rejects.toThrow()
     const recovered = await sender.settledReceipt(request, intent)
     expect(recovered.status).toBe('success')
-    request.verifyReceipt!(recovered)
+    await checkReceiptEffects(request, recovered)
     console.info('Local 100-position entry recovered', { chainId, transactionHash: recovered.transactionHash })
     expect(await fork.client.getTransactionCount({ address: account })).toBe(nonce + 1)
     const mints = receiptMoves(market.hook, recovered).filter(move => move.from === zeroAddress)

@@ -11,6 +11,7 @@ import {
 } from '@bananapus/nana-sdk-core/review'
 import { expect } from 'vitest'
 import { reviewedAction, type PreparedTransaction } from '../../src/lib/transaction'
+import { checkReceiptEffects } from './effects'
 import { chainForId } from '../../src/lib/wallet'
 import { centerAppOrigin, centerBaseUrl } from '../../src/lib/center'
 import deploymentPins from '../../src/lib/defifa-deployments.json' with { type: 'json' }
@@ -141,7 +142,7 @@ export function forkSender(fork: LocalFork) {
     const result = await sendReviewed(reviewedAction(prepared, intent), { adapter, hold, clientFor: () => fork.client })
     if (result.status !== 'done') throw new Error(`The fork write ended ${result.status}.`)
     const receipt = result.receipts.at(-1)!
-    await prepared.verifyReceipt?.(receipt)
+    await checkReceiptEffects(prepared, receipt)
     return receipt
   }
   /**

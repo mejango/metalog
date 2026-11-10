@@ -143,21 +143,20 @@ describe('a run\'s outcome for its form', () => {
   const mined = { transactionHash: `0x${'ab'.repeat(32)}`, status: 'success', logs: [] } as unknown as TransactionReceipt
   const noReceipt = { getTransactionReceipt: async () => { throw new Error('unused') } }
 
-  it('returns a mined write as the outcome when its effect check fails, and reports the check instead of an error', async () => {
+  it('returns a mined write as its outcome once its effects apply, with nothing to report', async () => {
     const apply = vi.fn(async () => {})
     const report = vi.fn()
-    const prepared = { ...write('0x12345678'), verifyReceipt: async () => { throw new Error('Center did not answer.') } }
     const done = { status: 'done' as const, hashes: [mined.transactionHash], receipts: [mined] }
-    await expect(runOutcome(done, prepared, noReceipt, apply, report)).resolves.toBe(mined)
+    await expect(runOutcome(done, noReceipt, apply, report)).resolves.toBe(mined)
     expect(apply).toHaveBeenCalledWith(mined)
-    expect(report).toHaveBeenCalledWith(expect.stringContaining('Center did not answer.'))
+    expect(report).not.toHaveBeenCalled()
   })
 
   it('reports a mined write whose receipt could not be read, instead of failing its form', async () => {
     const report = vi.fn()
     const done = { status: 'done' as const, hashes: [mined.transactionHash], receipts: [] }
     const unread = { getTransactionReceipt: async () => { throw new Error('The RPC timed out.') } }
-    await expect(runOutcome(done, write('0x12345678'), unread, async () => {}, report)).resolves.toBeNull()
+    await expect(runOutcome(done, unread, async () => {}, report)).resolves.toBeNull()
     expect(report).toHaveBeenCalledWith(expect.stringContaining('The RPC timed out.'))
   })
 
@@ -166,7 +165,7 @@ describe('a run\'s outcome for its form', () => {
     let settle!: (done: { status: 'done'; hashes: Hex[]; receipts: TransactionReceipt[] }) => void
     const ended = new Promise<{ status: 'done'; hashes: Hex[]; receipts: TransactionReceipt[] }>(resolve => { settle = resolve })
     const confirming = { status: 'receipt' as const, step: 0, hash: mined.transactionHash, ended: () => ended }
-    const handed = runOutcome(confirming, write('0x12345678'), noReceipt, apply, vi.fn())
+    const handed = runOutcome(confirming, noReceipt, apply, vi.fn())
     await expect(Promise.race([handed, new Promise(resolve => setTimeout(resolve, 50, 'still waiting'))])).resolves.toBeNull()
     settle({ status: 'done', hashes: [mined.transactionHash], receipts: [mined] })
     await vi.waitFor(() => expect(apply).toHaveBeenCalledWith(mined))

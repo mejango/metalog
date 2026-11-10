@@ -72,7 +72,7 @@ Defifa 2.0.1 ERC-1155 addresses (deployer, governor, voting referee, hook, hook 
 | Location | Responsibility |
 | --- | --- |
 | `src/domain` | Distribution, exact range boundaries, allocation, definition validation |
-| `src/lib/defifa*` | Pinned deployments, native Defifa calls, chain evidence and receipt effects |
+| `src/lib/defifa*` | Pinned deployments, native Defifa calls and chain evidence |
 | `src/lib/bendystraw.ts` | Server-side discovery reads (market list, activity, holders for the voter list); results are re-read on chain |
 | `src/lib/transaction.ts` | Shared SDK execution adapter and durable transaction evidence |
 | `src/lib/wallet*`, `src/providers` | One chain/RPC policy, wagmi, Query, lazy Signa and connection state |

@@ -268,26 +268,6 @@ export function createdMarketId(receipt: TransactionReceipt): string {
   return ((logs[0].args as { gameId: bigint }).gameId).toString()
 }
 
-async function verifyLaunchReceipt(
-  client: PublicClient, chainId: number, owner: Address, published: PublishedMarketMetadata, receipt: TransactionReceipt,
-): Promise<void> {
-  const definition = published.definition
-  const d = deploymentForChain(chainId)
-  const projectId = createdMarketId(receipt)
-  const launch = parseEventLogs({ abi: DEFIFA_ABI.DefifaDeployer, logs: receipt.logs, eventName: 'LaunchGame', strict: true })
-    .find(log => sameAddress(log.address, d.deployer))
-  if (!launch || !sameAddress((launch.args as { caller: Address }).caller, owner)) {
-    throw new Error('The confirmed market does not match its creator.')
-  }
-  const block = await client.getBlock({ blockNumber: receipt.blockNumber })
-  const uri = await contractRead<string>(client, d.controller, 'JBController', 'uriOf', [BigInt(projectId)], block.number)
-  if (uri !== published.projectUri) throw new Error('The confirmed metadata URI does not match the reviewed transaction.')
-  const market = await readMarketAt(client, chainId, projectId, block.number, Number(block.timestamp))
-  if (encodeMarketDefinition(market.definition) !== encodeMarketDefinition(definition)) {
-    throw new Error('The confirmed market definition does not match the reviewed transaction.')
-  }
-}
-
 export type PositionMove = { from: Address; to: Address; id: bigint; value: bigint }
 
 /** Every 1155 single and batch transfer the hook emitted, one row per position ID. */
@@ -405,7 +385,6 @@ export async function prepareCreateMarket(
       }
       if (await freshFee() !== fee) throw new Error('The creation fee changed. Review a fresh transaction.')
     },
-    verifyReceipt: receipt => verifyLaunchReceipt(client, chainId, owner, published, receipt),
   }
 }
 
@@ -467,6 +446,5 @@ export async function prepareEntry(
         ? [{ label: current.ranges[index].label, value: String(quantity) }] : []),
     ],
     reverify: async () => { await refresh() },
-    verifyReceipt: receipt => verifyEntryReceipt(current, owner, expected, receipt),
   }
 }

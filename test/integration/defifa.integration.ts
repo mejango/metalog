@@ -12,6 +12,7 @@ import {
   type MarketSnapshot,
 } from '../../src/lib/defifa'
 import { verifyDefifaDeployment } from '../../src/lib/defifa-deployment'
+import { checkReceiptEffects } from './effects'
 import { prepareLifecycleAction, readCashOutQuote, readLifecycle } from '../../src/lib/defifa-lifecycle'
 import { marketIntent, type PreparedTransaction } from '../../src/lib/transaction'
 import { forkChainIds, forkSender, startFork, type LocalFork } from './fork'
@@ -89,7 +90,7 @@ describe.each(forkChainIds)('canonical Defifa contracts on local chain %i fork',
     await expect(sender.send(request, intent)).rejects.toThrow()
     const recovered = await sender.settledReceipt(request, intent)
     expect(recovered.status).toBe('success')
-    request.verifyReceipt!(recovered)
+    await checkReceiptEffects(request, recovered)
     expect(await fork.client.getTransactionCount({ address: request.account })).toBe(nonce + 1)
     const mints = receiptMoves(market.hook, recovered).filter(move => move.from === zeroAddress)
     expect(mints.reduce((sum, move) => sum + move.value, 0n)).toBe(6n)

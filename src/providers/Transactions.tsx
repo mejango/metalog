@@ -139,7 +139,7 @@ export function Transactions({ children }: PropsWithChildren) {
           if (connector()?.uid !== uid) throw new ReviewLineError(REVIEWED_ACCOUNT_CHANGED_LINE)
         },
       })
-      return await runOutcome(ran, prepared, publicClientForChain(prepared.chainId), receipt => settled(prepared.chainId, receipt), setUnchecked)
+      return await runOutcome(ran, publicClientForChain(prepared.chainId), receipt => settled(prepared.chainId, receipt), setUnchecked)
     } finally { aborts.current.delete(abort); setSending(false) }
   }, [runner, settled])
 

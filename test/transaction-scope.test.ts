@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { encodeFunctionData, type Address } from 'viem'
 import { DEFIFA_ABI, deploymentForChain } from '../src/lib/defifa-deployment'
-import { decodeDefifaTransactionCall } from '../src/lib/transaction-scope'
+import { decodeDefifaTransactionCall } from './integration/effects'
 
 const chainId = 8453
 const deployment = deploymentForChain(chainId)

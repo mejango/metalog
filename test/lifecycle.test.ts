@@ -8,7 +8,8 @@ import { createHookMetadata, hookMetadataId } from '@bananapus/nana-sdk-core'
 import { createRanges } from '../src/domain/ranges'
 import { SCORECARD_WEIGHT_TOTAL, scorecardWeightsFromPercentages } from '../src/domain/scorecard'
 import { DEFIFA_ABI, deploymentForChain, NATIVE_TOKEN, type MarketSnapshot } from '../src/lib/defifa'
-import { prepareLifecycleAction, readCashOutQuote, readLifecycle, verifyLifecycleReceipt, type LifecycleAction } from '../src/lib/defifa-lifecycle'
+import { prepareLifecycleAction, readCashOutQuote, readLifecycle, type LifecycleAction } from '../src/lib/defifa-lifecycle'
+import { verifyLifecycleReceipt } from './integration/effects'
 import { verifyDefifaDeployment } from '../src/lib/defifa-deployment'
 
 const mocks = vi.hoisted(() => ({ getBlock: vi.fn(), getChainId: vi.fn(), getBytecode: vi.fn(), readContract: vi.fn(), getLogs: vi.fn(), simulateContract: vi.fn(), readMarketAt: vi.fn() }))

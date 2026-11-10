@@ -13,6 +13,7 @@ import {
   decodeEntryMemo, verifyRecordedEntry,
 } from '../src/lib/defifa'
 import { assertDeploymentCode, assertGameClone, verifyDefifaDeployment } from '../src/lib/defifa-deployment'
+import { checkReceiptEffects } from './integration/effects'
 import { forecastPreview } from '../src/lib/forecast'
 import { buildProjectMetadata } from '../src/domain/market-metadata'
 import { loadMarketMetadata, publishMarketMetadata, type PublishedMarketMetadata } from '../src/lib/market-metadata'
@@ -247,10 +248,10 @@ describe('Defifa launch calldata and fresh state', () => {
     expect(loadMarketMetadata).toHaveBeenCalledWith(launch.projectUri)
     uri = launch.projectUri
     observedRanges = marketRanges(customDefinition)
-    await expect(tx.verifyReceipt!(creationReceipt())).resolves.toBeUndefined()
+    await expect(checkReceiptEffects(tx, creationReceipt())).resolves.toBeUndefined()
     alteredTierHash = 2
     await expect(readMarket(chainId, '7')).rejects.toThrow()
-    await expect(tx.verifyReceipt!(creationReceipt())).rejects.toThrow()
+    await expect(checkReceiptEffects(tx, creationReceipt())).rejects.toThrow()
     alteredTierHash = null
     alteredContractUri = encodeMarketDefinition(customDefinition)
     await expect(readMarket(chainId, '7')).rejects.toThrow()
@@ -270,7 +271,7 @@ describe('Defifa launch calldata and fresh state', () => {
     const otherUri = `ipfs://${bytes32ToCidV0(keccak256(stringToHex('different project bytes')))}`
     publishedByUri.set(otherUri, { ...publishedByUri.get(uri)!, projectUri: otherUri, contractUri: otherUri })
     uri = otherUri
-    await expect(tx.verifyReceipt!(creationReceipt())).rejects.toThrow('confirmed metadata URI')
+    await expect(checkReceiptEffects(tx, creationReceipt())).rejects.toThrow('confirmed metadata URI')
     uri = launch.projectUri
     publishedByUri.delete(uri)
     await expect(tx.reverify!()).rejects.toThrow('Center metadata is unavailable')
@@ -297,7 +298,7 @@ describe('Defifa launch calldata and fresh state', () => {
     expect(decoded.args![6]).toBe(payMetadata(hook, [1, 3]))
     expect(entry.details).toContainEqual({ label: 'Voting address', value: hook })
     expect(entry.details?.find(detail => detail.label === 'Voting power')?.value).toContain('all your existing')
-    expect(() => entry.verifyReceipt!(mintReceipt([1, 3]))).not.toThrow()
+    await expect(checkReceiptEffects(entry, mintReceipt([1, 3]))).resolves.toBeUndefined()
   })
   it('encodes the native Defifa launch struct, immutable definition and exact creation fee', async () => {
     const tx = await prepareCreateMarket(definition, chainId, account)
@@ -352,7 +353,7 @@ describe('Defifa launch calldata and fresh state', () => {
     const metadata = payment.args![6] as Hex
     const expectedIds = preview.allocation.tierIds.flatMap((id, index) => Array<number>(preview.allocation.quantities[index]).fill(id))
     expect(metadata).toBe(payMetadata(account, expectedIds))
-    expect(() => entry.verifyReceipt!(mintReceipt(expectedIds))).not.toThrow()
+    await expect(checkReceiptEffects(entry, mintReceipt(expectedIds))).resolves.toBeUndefined()
     uri = encodeMarketDefinition({ ...custom, rangeWidth: 1 })
     await expect(readMarket(chainId, '7')).rejects.toThrow('onchain ranges')
     await expect(entry.reverify!()).rejects.toThrow('onchain ranges')
@@ -391,7 +392,7 @@ describe('Defifa launch calldata and fresh state', () => {
     const payment = decodeFunctionData({ abi: DEFIFA_ABI.JBMultiTerminal, data: entry.data })
     expect(payment.args![6]).toBe(payMetadata(account, expectedIds))
     expect(entry.value).toBe(BigInt(customDefinition.unitPriceWei) * 100n)
-    expect(() => entry.verifyReceipt!(mintReceipt(expectedIds))).not.toThrow()
+    await expect(checkReceiptEffects(entry, mintReceipt(expectedIds))).resolves.toBeUndefined()
 
     const changed = { ...customDefinition, rangeBoundaries: [-5, -1, 0, 0.5, 5] } as MarketDefinition
     uri = encodeMarketDefinition(changed)
@@ -520,8 +521,8 @@ describe('Defifa market reads and curve entry', () => {
     expect(counts).toEqual([7n, 3n])
     expect(tx.details).toContainEqual({ label: ranges[0].label, value: '7' })
     expect(tx.details).toContainEqual({ label: ranges[2].label, value: '3' })
-    expect(() => tx.verifyReceipt!(mintReceipt(ids))).not.toThrow()
-    expect(() => tx.verifyReceipt!(mintReceipt(ids.slice(1)))).toThrow('complete reviewed')
+    await expect(checkReceiptEffects(tx, mintReceipt(ids))).resolves.toBeUndefined()
+    await expect(checkReceiptEffects(tx, mintReceipt(ids.slice(1)))).rejects.toThrow('complete reviewed')
     remaining = 6
     await expect(tx.reverify!()).rejects.toThrow('enough positions')
   })
@@ -569,9 +570,9 @@ describe('Defifa market reads and curve entry', () => {
     const tx = await prepareEntry(market, allocation, account, coefficients)
     const logs = mintLogs(allocation.tierIds.flatMap((tierId, index) => Array<number>(allocation.quantities[index]).fill(tierId)))
     const receipt = { status: 'success', blockNumber: 100n, logs } as unknown as TransactionReceipt
-    expect(() => tx.verifyReceipt!(receipt)).not.toThrow()
-    expect(() => tx.verifyReceipt!({ ...receipt, logs: receipt.logs.slice(1) })).toThrow('complete reviewed')
-    expect(() => tx.verifyReceipt!({ ...receipt, status: 'reverted' })).toThrow('complete reviewed')
+    await expect(checkReceiptEffects(tx, receipt)).resolves.toBeUndefined()
+    await expect(checkReceiptEffects(tx, { ...receipt, logs: receipt.logs.slice(1) })).rejects.toThrow('complete reviewed')
+    await expect(checkReceiptEffects(tx, { ...receipt, status: 'reverted' })).rejects.toThrow('complete reviewed')
   })
 })
 
@@ -600,9 +601,9 @@ it.each([{ name: 'uniform', definition }, { name: 'custom', definition: customDe
     } }),
     data: encodeAbiParameters([{ type: 'address' }, { type: 'address' }], [zeroAddress, account]),
   }] } as unknown as TransactionReceipt
-  await expect(tx.verifyReceipt!(receipt)).resolves.toBeUndefined()
+  await expect(checkReceiptEffects(tx, receipt)).resolves.toBeUndefined()
   const otherCaller = encodeAbiParameters([{ type: 'address' }, { type: 'address' }], [zeroAddress, hook])
-  await expect(tx.verifyReceipt!({ ...receipt, logs: [{ ...receipt.logs[0], data: otherCaller }] })).rejects.toThrow('creator')
+  await expect(checkReceiptEffects(tx, { ...receipt, logs: [{ ...receipt.logs[0], data: otherCaller }] })).rejects.toThrow('creator')
   uri = encodeMarketDefinition({ ...definition, source: 'A different source' })
-  await expect(tx.verifyReceipt!(receipt)).rejects.toThrow('confirmed metadata URI')
+  await expect(checkReceiptEffects(tx, receipt)).rejects.toThrow('confirmed metadata URI')
 })
