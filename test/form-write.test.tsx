@@ -107,6 +107,25 @@ describe('a form\'s write over core\'s run', () => {
   }, 15_000)
 })
 
+describe('one form, two actions on one market', () => {
+  it('completes a recovered lost-reply refund with the refund\'s own callback after a delegation was refused', async () => {
+    confirmEveryReview()
+    const { h, form, sends, recoverLost } = setup()
+    const lifecycle = form()
+    const refunded = vi.fn(), delegated = vi.fn()
+    await submit(lifecycle, refunded)
+    expect(sends()).toBe(1)
+    // A delegation from the same panel: the market's hold refuses it, nothing is sent.
+    h.setReply(h.mine)
+    await submit(lifecycle, delegated, vi.fn(async () => ({ ...prepared(), data: '0xabcdef01' as Hex })))
+    expect(sends()).toBe(1)
+    await recoverLost()
+    await waitFor(() => expect(refunded).toHaveBeenCalledTimes(1), { timeout: 8_000 })
+    expect(delegated).not.toHaveBeenCalled()
+    expect(sends()).toBe(1)
+  }, 15_000)
+})
+
 describe('two forms queued on one market', () => {
   it('never sends a form\'s lost-reply write twice when another form\'s refused run acknowledged its recovery first', async () => {
     confirmEveryReview()

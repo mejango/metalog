@@ -35,7 +35,7 @@ export function useFormWrite({ deps, settle, gate }: FormWriteOptions) {
   const [completing, setCompleting] = useState(false)
   const [error, setError] = useState('')
   const [chainId, setChainId] = useState<number | null>(null)
-  /** The latest run's form: what runs once that run shows its write done. */
+  /** The form of the write the run follows, bound once its hold reserved it: what runs once it shows that write done. */
   const pending = useRef<Done | null>(null)
 
   const busy = preparing || completing || runner.busy
@@ -69,9 +69,16 @@ export function useFormWrite({ deps, settle, gate }: FormWriteOptions) {
       setPreparing(false)
       if (completed.current !== generation) return
       const { runner, gate } = latest.current
-      pending.current = { chainId: prepared.chainId, done, fallback }
-      setChainId(prepared.chainId)
-      await runner.run({ ...reviewedAction(prepared, intent), ...(gate ? { assertWriteState: gate() } : {}) })
+      await runner.run({
+        ...reviewedAction(prepared, intent),
+        ...(gate ? { assertWriteState: gate() } : {}),
+        // Its hold reserved this write: the run now follows it, so its form completes when it does. A run the hold
+        // refused, or one that closed as done on an earlier write, leaves that write's form in place.
+        beforeWallet: () => {
+          pending.current = { chainId: prepared.chainId, done, fallback }
+          setChainId(prepared.chainId)
+        },
+      })
     } catch (cause) { setError(cause instanceof Error ? cause.message : fallback) }
     finally {
       setPreparing(false)
