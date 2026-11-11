@@ -234,3 +234,11 @@ Resources: `/Users/jango/Documents/jb/v6/evm/AGENTS.md`, `/Users/jango/Documents
 - [x] check, browser, fork suites; commit, push
 
 Review: the pass 7 regression failed on `formRuns` (the next submission never prepared). Forms now run through their own `useReviewedRun` (`src/lib/form-write.ts`), and reviews go through core's `createReviewQueue`. The local layer is deleted. The remaining local logic is a hold check before the run, because core's run adopts whatever its intent holds after a refused run, plus a per-form completing gate. Regressions for passes 5, 6 and 7 run against the hook, and each guard was mutation-checked. `npm run check` (179 tests), `test:browser` (83 passed, 1 skipped) and the fork lifecycle suite all pass.
+
+## SDK 6.3.0 adoption (pass 8)
+
+- [x] Pass 8 regression (two forms queued on one market, the transfer's lost reply recovered and acknowledged by another reader, the retry) failed on 6.2.0 with the local guards: two sends.
+- [x] Bumped `@bananapus/nana-sdk-core` to 6.3.0 at an exact version. Deleted the pre-run hold check, the `WriteHeldError` claim drop, the owner/closing gate and the `active` ref. Core's follow rules and own-success gate replace them.
+- [x] Regressions for passes 5 through 8 run through the SDK path with `lapsingLocksForTests` installed as `navigator.locks`.
+
+Review: two local lines remain, each needed by an SDK-path test that fails without it. `completing` keeps the form busy while its shown-done success applies its receipt; core already counts that write as shown, so a new run would send again. The `completed` generation drops a retry whose preparation, which happens outside core's run, began before its write completed. `npm run check` (180 tests), `test:browser` (83 passed, 1 skipped) and the fork lifecycle suite pass on Node 22.23.4.

@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { numberToHex, type Address, type Hex, type PublicClient, type TransactionReceipt } from 'viem'
 import type { UseReviewedRunDeps } from '@bananapus/nana-sdk-core/review/react'
+import { lapsingLocksForTests } from '@bananapus/nana-sdk-core/testing'
 import { useFormWrite } from '../src/lib/form-write'
 import { marketIntent, type PreparedTransaction } from '../src/lib/transaction'
 import { account, confirmEveryReview, harness, marketA, write } from './hold-harness'
@@ -12,8 +13,14 @@ const other = '0x0000000000000000000000000000000000000033' as Address
 const engine = () => import('@bananapus/nana-sdk-core/review')
 const lost = numberToHex(99, { size: 32 })
 
-/** A chain and wallet whose next send broadcasts and loses its reply, and forms that run through core's useReviewedRun. */
+afterEach(() => { vi.unstubAllGlobals() })
+
+/**
+ * A chain and wallet whose next send broadcasts and loses its reply, and forms that run through core's useReviewedRun,
+ * with the browser's Web Locks standing in as core's lapsing test locks.
+ */
 function setup() {
+  vi.stubGlobal('navigator', { ...navigator, locks: lapsingLocksForTests().locks })
   const h = harness()
   let connected = account
   h.adapter.account = () => connected
@@ -35,7 +42,9 @@ function setup() {
     h.chain.head += 1n
     h.chain.txs.find(tx => tx.hash === lost)!.block = h.chain.head
     const held = h.hold.list({ account: owner, chainId: 8453 }).find(item => item.record.namespace === intent)!
-    await expect(held.handle.attachHash(h.client as never, lost)).resolves.toMatchObject({ status: 'clear' })
+    const state = await held.handle.attachHash(h.client as never, lost)
+    expect(state).toMatchObject({ status: 'clear' })
+    return { handle: held.handle, state }
   }
   return {
     h, settle, form, sends, recoverLost,
@@ -63,7 +72,7 @@ describe('a form\'s write over core\'s run', () => {
     await submit(original, done)
     await submit(another, anotherDone)
     expect(sends()).toBe(1)
-    expect(original.result.current.error).toBeTruthy()
+    expect(original.result.current.runner.error).toBeTruthy()
     // The original mines; the user enters its hash and recovery settles it: its form completes, once.
     await recoverLost()
     await waitFor(() => expect(done).toHaveBeenCalledTimes(1), { timeout: 8_000 })
@@ -95,6 +104,36 @@ describe('a form\'s write over core\'s run', () => {
     await submit(shared, vi.fn(), next)
     expect(next).toHaveBeenCalledTimes(1)
     await waitFor(() => expect(shared.result.current.busy).toBe(false))
+  }, 15_000)
+})
+
+describe('two forms queued on one market', () => {
+  it('never sends a form\'s lost-reply write twice when another form\'s refused run acknowledged its recovery first', async () => {
+    confirmEveryReview()
+    const { h, form, sends, recoverLost } = setup()
+    const transfer = form(), entry = form()
+    const transferred = vi.fn(), entered = vi.fn()
+    // Both reviews open before either reserves the market: the transfer broadcasts and loses its reply, then the hold
+    // refuses the entry.
+    await act(async () => {
+      await Promise.all([
+        transfer.result.current.run(async () => prepared(), intent, transferred, 'failed'),
+        entry.result.current.run(async () => ({ ...prepared(), data: '0xabcdef01' }), intent, entered, 'failed'),
+      ])
+    })
+    expect(sends()).toBe(1)
+    h.setReply(h.mine)
+    // The transfer is recovered from its hash.
+    const { handle, state } = await recoverLost()
+    // Another reader (the entry's refused run, say) acknowledges the transfer's success before the transfer's own run does.
+    if (state.status === 'clear' && state.settled && 'hash' in state.settled) await handle.acknowledge(state.settled)
+    expect(handle.unacknowledgedSuccess()).toBeUndefined()
+    // Before the transfer's own run shows it done, the unchanged transfer is sent again: it never reaches the wallet.
+    await submit(transfer, transferred)
+    expect(sends()).toBe(1)
+    await waitFor(() => expect(transferred).toHaveBeenCalledTimes(1), { timeout: 8_000 })
+    expect(entered).not.toHaveBeenCalled()
+    expect(sends()).toBe(1)
   }, 15_000)
 })
 

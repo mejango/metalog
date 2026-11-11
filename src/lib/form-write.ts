@@ -2,12 +2,11 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Hex, TransactionReceipt } from 'viem'
-import { openStepHold, TransactionReviewCancelledError, WriteHeldError } from '@bananapus/nana-sdk-core/review'
 import { useReviewedRun, type UseReviewedRunDeps } from '@bananapus/nana-sdk-core/review/react'
 import { reviewedAction, type PreparedTransaction } from './transaction'
 
-/** The form whose write a run sent: its chain, and what it does once that write succeeded and its effects applied. */
-type Owner = { chainId: number; done: (receipt: TransactionReceipt) => void | Promise<void>; fallback: string }
+/** What a form does once its run shows its write done: on that write's chain, after the app's receipt effects. */
+type Done = { chainId: number; done: (receipt: TransactionReceipt) => void | Promise<void>; fallback: string }
 
 export type FormWriteOptions = {
   /** Core's run dependencies; null (no wallet yet) refuses every run. */
@@ -19,80 +18,67 @@ export type FormWriteOptions = {
 }
 
 /**
- * One form's writes over core's useReviewedRun, as revnet's forms run theirs: the form owns its run, and its run follows
- * the write it sent (in the run, still confirming, or a lost wallet reply recovered from its hash) until it shows `done`.
- * Then `settle` applies its receipt and the form's own `done` runs, once.
+ * One form's writes over core's useReviewedRun, as revnet's forms run theirs: the form prepares, its own run reviews,
+ * sends and follows its write (in the run, still confirming, or a lost wallet reply recovered from its hash), and once
+ * the run shows it done, `settle` applies its receipt and the form's `done` runs. Core decides what the run follows and
+ * when a retry closes as done or is refused instead of sending.
  *
- * A write the hold already holds never starts a run: core's run follows whatever its call's hold holds after any failure,
- * so a run refused by another write's hold would adopt that write as its own, and a retry would replace the run that
- * follows the form's own write. One refused in a race (another tab reserved first) is dropped from the form the same way.
- * A form whose write succeeded while its next one prepared, reviewed or applied effects sends nothing.
+ * Core cannot see two windows outside its run, so the form covers them: it starts nothing while its success applies
+ * (the run already showed it done, so a new run would send again), and a retry whose preparation began before its
+ * write completed sends nothing.
  */
 export function useFormWrite({ deps, settle, gate }: FormWriteOptions) {
   const runner = useReviewedRun(deps)
-  const latest = useRef({ runner, deps, settle, gate })
-  useLayoutEffect(() => { latest.current = { runner, deps, settle, gate } })
+  const latest = useRef({ runner, settle, gate })
+  useLayoutEffect(() => { latest.current = { runner, settle, gate } })
   const [preparing, setPreparing] = useState(false)
   const [completing, setCompleting] = useState(false)
   const [error, setError] = useState('')
   const [chainId, setChainId] = useState<number | null>(null)
-  /** A run is open: preparing, in review, sending or following in place. */
-  const active = useRef(false)
-  /** This form's write succeeded and its effects are applying: it starts nothing until they are done. */
-  const closing = useRef(false)
-  /** The form whose write the run follows; cleared once completed, or when its run never reserved a write. */
-  const owner = useRef<Owner | null>(null)
-  /** Writes of this form that completed: a run begun before one is dropped. */
+  /** The latest run's form: what runs once that run shows its write done. */
+  const pending = useRef<Done | null>(null)
+
+  const busy = preparing || completing || runner.busy
+  const busyNow = useRef(busy)
+  /** Writes of this form shown done: a retry prepared across one is dropped. */
   const completed = useRef(0)
+  useLayoutEffect(() => { busyNow.current = busy })
 
   const hash = runner.phase === 'done' ? runner.hash : null
   useEffect(() => {
-    const form = owner.current
+    const form = pending.current
     if (!hash || !form) return
-    owner.current = null
+    pending.current = null
     completed.current += 1
-    closing.current = true
+    busyNow.current = true
     setCompleting(true)
-    void (async () => {
-      try { await form.done(await latest.current.settle(form.chainId, hash)) }
-      catch (cause) { setError(cause instanceof Error ? cause.message : form.fallback) }
-      finally { closing.current = false; setCompleting(false) }
-    })()
+    void latest.current.settle(form.chainId, hash).then(form.done)
+      .catch(cause => setError(cause instanceof Error ? cause.message : form.fallback))
+      .finally(() => setCompleting(false))
   }, [hash])
 
   const run = useCallback(async (prepare: () => Promise<PreparedTransaction>, intent: string,
     done: (receipt: TransactionReceipt) => void | Promise<void>, fallback: string) => {
-    if (active.current || closing.current) return
-    active.current = true
+    if (busyNow.current) return
+    busyNow.current = true
     const generation = completed.current
-    const stale = () => completed.current !== generation || closing.current
     setError('')
     setPreparing(true)
     try {
       const prepared = await prepare()
       setPreparing(false)
-      if (stale()) return
-      const { runner, deps } = latest.current
-      const action = reviewedAction(prepared, intent)
-      if (deps) {
-        const held = openStepHold(deps.hold, prepared.account, false, action.calls[0]).peek()
-        if (held.status !== 'clear') { setError(held.line); return }
-      }
-      const last = latest.current.gate?.()
-      const form: Owner = { chainId: prepared.chainId, done, fallback }
-      owner.current = form
+      if (completed.current !== generation) return
+      const { runner, gate } = latest.current
+      pending.current = { chainId: prepared.chainId, done, fallback }
       setChainId(prepared.chainId)
-      const ran = await runner.run({
-        ...action,
-        assertWriteState: () => {
-          last?.()
-          if (stale()) throw new TransactionReviewCancelledError()
-        },
-      })
-      if (ran?.status === 'failed' && ran.failure instanceof WriteHeldError && owner.current === form) owner.current = null
+      await runner.run({ ...reviewedAction(prepared, intent), ...(gate ? { assertWriteState: gate() } : {}) })
     } catch (cause) { setError(cause instanceof Error ? cause.message : fallback) }
-    finally { active.current = false; setPreparing(false) }
+    finally {
+      setPreparing(false)
+      // Until the next render says otherwise: a run that changed nothing renders nothing.
+      busyNow.current = latest.current.runner.busy
+    }
   }, [])
 
-  return { runner, run, preparing, completing, error, setError, chainId, busy: preparing || completing || runner.busy }
+  return { runner, run, preparing, error, setError, chainId, busy }
 }
