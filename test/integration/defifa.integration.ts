@@ -1,34 +1,24 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { parseAbi, zeroAddress, type Address, type TransactionReceipt } from 'viem'
+import { parseAbi, zeroAddress, type TransactionReceipt } from 'viem'
+import { TRANSACTION_GAS_CAP, writeIntentKey } from '@bananapus/nana-sdk-core/review'
 import { allocateManualPositions } from '../../src/domain/allocation'
 import { coefficientsFromMoments } from '../../src/domain/distribution'
 import { MIN_NEW_UNIT_PRICE_WEI, validateMarket, type MarketDefinition } from '../../src/domain/market'
 import { MAX_RANGE_COUNT } from '../../src/domain/ranges'
 import {
-  createdMarketId, prepareCreateMarket, prepareEntry, readMarket, receiptMoves, verifyDefifaTransactionReceipt,
+  createdMarketId, prepareCreateMarket, prepareEntry, readMarket, receiptMoves,
   type MarketSnapshot,
 } from '../../src/lib/defifa'
 import { verifyDefifaDeployment } from '../../src/lib/defifa-deployment'
+import { checkReceiptEffects } from './effects'
 import { prepareLifecycleAction, readCashOutQuote, readLifecycle } from '../../src/lib/defifa-lifecycle'
-import {
-  executeTransaction, readPendingTransaction, recoverTransaction, TRANSACTION_GAS_CAP,
-  type PreparedTransaction, type TransactionRuntime,
-} from '../../src/lib/transaction'
-import { forkChainIds, startFork, type LocalFork } from './fork'
+import { marketIntent, type PreparedTransaction } from '../../src/lib/transaction'
+import { forkChainIds, forkSender, startFork, type LocalFork } from './fork'
 
 const smokeOnly = process.env.METALOG_FORK_SMOKE === 'true'
 const tokenAbi = parseAbi(['function balanceOf(address) view returns (uint256)'])
-
-function memoryStorage() {
-  const values = new Map<string, string>()
-  return {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => { values.set(key, value) },
-    removeItem: (key: string) => { values.delete(key) },
-  }
-}
 
 describe.each(forkChainIds)('canonical Defifa contracts on local chain %i fork', chainId => {
   let fork: LocalFork
@@ -38,32 +28,20 @@ describe.each(forkChainIds)('canonical Defifa contracts on local chain %i fork',
   const coefficients = coefficientsFromMoments(0, 1)
   const sent: { title: string; hash: string; blockNumber: string }[] = []
 
-  function runtime(account: Address, storage = memoryStorage()): TransactionRuntime {
-    return {
-      client: fork.client, storage,
-      identity: () => ({ address: account, chainId, connectorUid: 'isolated-anvil', isSigna: false }),
-      review: async () => true,
-      onStatus: () => {},
-      switchChain: async target => { expect(target).toBe(chainId) },
-      send: async request => {
-        expect(new URL(fork.url).hostname).toBe('127.0.0.1')
-        return fork.wallet(account).sendTransaction(request)
-      },
-    }
-  }
-
+  let sender: ReturnType<typeof forkSender>
+  let writes = 0
+  /** Each write under its own hold: the app's scope rules are unit-tested; here the chain is. */
   async function execute(request: PreparedTransaction): Promise<TransactionReceipt> {
-    const environment = runtime(request.account)
-    const receipt = await executeTransaction(request, environment)
+    expect(new URL(fork.url).hostname).toBe('127.0.0.1')
+    const receipt = await sender.send(request, writeIntentKey('metalog-fork', { write: ++writes }))
     expect(receipt.status).toBe('success')
-    expect(readPendingTransaction(environment.storage)).toBeNull()
-    await verifyDefifaTransactionReceipt(request, receipt)
     sent.push({ title: request.title, hash: receipt.transactionHash, blockNumber: String(receipt.blockNumber) })
     return receipt
   }
 
   beforeAll(async () => {
     fork = await startFork(chainId)
+    sender = forkSender(fork)
     // The normal server transport override points every app read/simulation at this same EVM.
     process.env.METALOG_RPC_URLS = JSON.stringify({ [chainId]: fork.url })
     const block = await fork.client.getBlock()
@@ -105,23 +83,15 @@ describe.each(forkChainIds)('canonical Defifa contracts on local chain %i fork',
     market = await readMarket(chainId, market.projectId)
     const allocation = allocateManualPositions(coefficients, market.ranges, [2, 2, 2])
     const request = await prepareEntry(market, allocation, fork.accounts[0], coefficients)
-    const environment = runtime(fork.accounts[0])
-    const send = environment.send
-    let hash: `0x${string}` | undefined
-    environment.send = vi.fn(async call => {
-      hash = await send(call)
-      throw new Error('Injected lost wallet response after the local transaction was mined')
-    })
-    await expect(executeTransaction(request, environment)).rejects.toThrow('lost wallet response')
-    const saved = readPendingTransaction(environment.storage)!
-    expect(saved.phase).toBe('unknown')
-    expect(environment.send).toHaveBeenCalledTimes(1)
-    // Reconstruct callbacks from only durable calldata, as a new browser session does.
-    const restored = { ...saved, value: BigInt(saved.value), verifyReceipt: (receipt: TransactionReceipt) => verifyDefifaTransactionReceipt({ ...saved, value: BigInt(saved.value) }, receipt) }
-    const recovered = await recoverTransaction(environment, hash, restored)
+    const intent = marketIntent(market)
+    const nonce = await fork.client.getTransactionCount({ address: request.account })
+    await expect(sender.send(request, intent, true)).rejects.toThrow()
+    // The hold refuses the same write again, then settles it from the chain alone: the mined entry, sent once.
+    await expect(sender.send(request, intent)).rejects.toThrow()
+    const recovered = await sender.settledReceipt(request, intent)
     expect(recovered.status).toBe('success')
-    expect(environment.send).toHaveBeenCalledTimes(1)
-    expect(readPendingTransaction(environment.storage)).toBeNull()
+    await checkReceiptEffects(request, recovered)
+    expect(await fork.client.getTransactionCount({ address: request.account })).toBe(nonce + 1)
     const mints = receiptMoves(market.hook, recovered).filter(move => move.from === zeroAddress)
     expect(mints.reduce((sum, move) => sum + move.value, 0n)).toBe(6n)
     market = await readMarket(chainId, market.projectId)

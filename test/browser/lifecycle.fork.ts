@@ -4,18 +4,11 @@ import { parseEventLogs, zeroAddress, type Abi } from 'viem'
 import type { LifecycleSnapshot } from '../../src/lib/defifa-lifecycle'
 import DEFIFA_ABI from '../../src/lib/defifa-abi.json' with { type: 'json' }
 import { injectForkWallet, startBrowserFork } from './lifecycle.harness'
-import { nativeCreationRequest } from '../fixtures/transaction-requests'
 
 test('the built website creates, enters, refunds, transfers, settles and claims on the native EVM', async ({ page }, testInfo) => {
   const environment = await startBrowserFork()
   const { fork, baseURL } = environment
   const wallet = await injectForkWallet(page, fork)
-  const legacy = JSON.stringify({ ...nativeCreationRequest, value: nativeCreationRequest.value.toString(),
-    version: 1, id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', createdAt: 1, afterBlock: '1', phase: 'unknown',
-    account: fork.accounts[0], title: 'Earlier unresolved creation', details: [] })
-  await page.addInitScript(record => {
-    if (!localStorage.getItem('metalog:transaction:v1')) localStorage.setItem('metalog:transaction:v1', record)
-  }, legacy)
   const pageErrors: string[] = []
   const evidence: { action: string; hash: string; blockNumber: string }[] = []
   page.on('pageerror', error => pageErrors.push(error.message))
@@ -41,8 +34,7 @@ test('the built website creates, enters, refunds, transfers, settles and claims 
     const hash = wallet.transactions[before]
     const receipt = await fork.client.waitForTransactionReceipt({ hash, timeout: 90_000 })
     expect(receipt.status).toBe('success')
-    await expect(page.getByRole('complementary', { name: 'Transaction status' }).getByText('Submission is unconfirmed. Check the original transaction before sending again.', { exact: true })).toBeVisible({ timeout: 90_000 })
-    expect(await page.evaluate(() => localStorage.getItem('metalog:transaction:v1'))).toBe(legacy)
+    await expect(page.getByRole('complementary', { name: 'Transaction status' }).getByText('Transaction confirmed.', { exact: true })).toBeVisible({ timeout: 90_000 })
     evidence.push({ action, hash, blockNumber: String(receipt.blockNumber) })
     console.info(`${action}: ${hash} at local block ${receipt.blockNumber}`)
     return receipt
@@ -81,7 +73,7 @@ test('the built website creates, enters, refunds, transfers, settles and claims 
     await page.getByLabel('Ranges', { exact: true }).fill('3')
     await page.getByLabel('Price per position (ETH)', { exact: true }).fill('0.001')
     await page.getByRole('combobox', { name: 'Network', exact: true }).selectOption('84532')
-    const receipt = await transact(page.getByRole('button', { name: 'Review new market', exact: true }), 'Create market')
+    const receipt = await transact(page.getByRole('button', { name: 'Review market', exact: true }), 'Create market')
     await expect(page).toHaveURL(/\/markets\/84532\/\d+$/)
     await expect(page.getByRole('heading', { level: 1, name: question, exact: true })).toBeVisible()
     expect(receipt.logs.length).toBeGreaterThan(0)
@@ -130,8 +122,28 @@ test('the built website creates, enters, refunds, transfers, settles and claims 
     await nfts().getByRole('menuitem', { name: 'Transfer', exact: true }).click()
     await page.getByLabel('Positions to send', { exact: true }).fill('1')
     await page.getByLabel('Transfer recipient', { exact: true }).fill(fork.accounts[1])
-    await transact(nfts().getByRole('button', { name: 'Review transfer', exact: true }), 'Transfer position')
+    // The wallet broadcasts the transfer but its reply is lost. Recovered from the hash the wallet shows, it completes its
+    // form, so the unchanged transfer can never be sent a second time.
+    const sends = wallet.transactions.length
+    wallet.loseNextReply()
+    const review = nfts().getByRole('button', { name: 'Review transfer', exact: true })
+    await expect(review).toBeEnabled()
+    await review.click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    await dialog.getByRole('button', { name: 'Continue to wallet', exact: true }).click()
+    await expect.poll(() => wallet.transactions.length, { timeout: 90_000 }).toBe(sends + 1)
+    const lost = wallet.transactions[sends]
+    const transferred = await fork.client.waitForTransactionReceipt({ hash: lost, timeout: 90_000 })
+    expect(transferred.status).toBe('success')
+    evidence.push({ action: 'Transfer position (wallet reply lost)', hash: lost, blockNumber: String(transferred.blockNumber) })
+    await page.getByLabel('Original transaction hash', { exact: true }).fill(lost)
+    await page.getByRole('button', { name: 'Check transaction', exact: true }).click()
+    await expect(page.getByLabel('Original transaction hash', { exact: true })).toHaveCount(0)
+    await expect(page.getByLabel('Transfer recipient', { exact: true })).toHaveCount(0)
+    await expect(review).toHaveCount(0)
     await held(4)
+    expect(wallet.transactions.length).toBe(sends + 1)
     await wallet.select(fork.accounts[1])
     await held(1)
     await expect(rangeLabel(0)).toHaveText(third)

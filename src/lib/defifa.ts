@@ -1,5 +1,5 @@
 import {
-  decodeFunctionData, encodeAbiParameters, encodeFunctionData, formatEther, getAddress,
+  encodeAbiParameters, encodeFunctionData, formatEther, getAddress,
   parseAbi, parseEventLogs, zeroAddress, type Address, type Hex, type PublicClient, type TransactionReceipt,
 } from 'viem'
 import { allocateManualPositions, allocatePositions, type Allocation } from '../domain/allocation'
@@ -268,26 +268,6 @@ export function createdMarketId(receipt: TransactionReceipt): string {
   return ((logs[0].args as { gameId: bigint }).gameId).toString()
 }
 
-async function verifyLaunchReceipt(
-  client: PublicClient, chainId: number, owner: Address, published: PublishedMarketMetadata, receipt: TransactionReceipt,
-): Promise<void> {
-  const definition = published.definition
-  const d = deploymentForChain(chainId)
-  const projectId = createdMarketId(receipt)
-  const launch = parseEventLogs({ abi: DEFIFA_ABI.DefifaDeployer, logs: receipt.logs, eventName: 'LaunchGame', strict: true })
-    .find(log => sameAddress(log.address, d.deployer))
-  if (!launch || !sameAddress((launch.args as { caller: Address }).caller, owner)) {
-    throw new Error('The confirmed market does not match its creator.')
-  }
-  const block = await client.getBlock({ blockNumber: receipt.blockNumber })
-  const uri = await contractRead<string>(client, d.controller, 'JBController', 'uriOf', [BigInt(projectId)], block.number)
-  if (uri !== published.projectUri) throw new Error('The confirmed metadata URI does not match the reviewed transaction.')
-  const market = await readMarketAt(client, chainId, projectId, block.number, Number(block.timestamp))
-  if (encodeMarketDefinition(market.definition) !== encodeMarketDefinition(definition)) {
-    throw new Error('The confirmed market definition does not match the reviewed transaction.')
-  }
-}
-
 export type PositionMove = { from: Address; to: Address; id: bigint; value: bigint }
 
 /** Every 1155 single and batch transfer the hook emitted, one row per position ID. */
@@ -359,51 +339,6 @@ export function verifyRecordedEntry(
   return { coefficients, allocation }
 }
 
-/** Recovery rebuilds the effect checks from recorded calldata, without authorizing another send. */
-export async function verifyDefifaTransactionReceipt(
-  request: { chainId: number; account: Address; to: Address; data: Hex; value: bigint },
-  receipt: TransactionReceipt,
-): Promise<void> {
-  const owner = signer(request.account)
-  const client = publicClientForChain(request.chainId)
-  const d = await verifyDefifaDeployment(client, request.chainId, receipt.blockNumber)
-  if (sameAddress(request.to, d.deployer)) {
-    const decoded = decodeFunctionData({ abi: DEFIFA_ABI.DefifaDeployer, data: request.data })
-    if (decoded.functionName !== 'launchGameWith') {
-      const { verifyLifecycleReceipt } = await import('./defifa-lifecycle')
-      return verifyLifecycleReceipt(request, receipt)
-    }
-    const launch = decoded.args?.[0] as { projectUri: string }
-    const published = await loadMarketMetadata(launch.projectUri)
-    const definition = published.definition
-    const expectedData = encodeFunctionData({
-      abi: DEFIFA_ABI.DefifaDeployer, functionName: 'launchGameWith', args: [launchData(definition, request.chainId, published)],
-    })
-    if (expectedData !== request.data) throw new Error('The recorded creation differs from the supported market definition.')
-    return verifyLaunchReceipt(client, request.chainId, owner, published, receipt)
-  }
-  if (!sameAddress(request.to, d.terminal)) {
-    if (request.value !== 0n) throw new Error('The recorded transaction has an unsupported target.')
-    const { verifyLifecycleReceipt } = await import('./defifa-lifecycle')
-    return verifyLifecycleReceipt(request, receipt)
-  }
-  const decoded = decodeFunctionData({ abi: DEFIFA_ABI.JBMultiTerminal, data: request.data })
-  if (decoded.functionName !== 'pay') {
-    const { verifyLifecycleReceipt } = await import('./defifa-lifecycle')
-    return verifyLifecycleReceipt(request, receipt)
-  }
-  const [projectId, token, amount, beneficiary, minimum, memoText, metadata] = decoded.args as
-    readonly [bigint, Address, bigint, Address, bigint, string, Hex]
-  if (!sameAddress(token, NATIVE_TOKEN) || !sameAddress(beneficiary, owner) || amount !== request.value || minimum !== 0n) {
-    throw new Error('The recorded entry amount or beneficiary does not match.')
-  }
-  const memo = decodeEntryMemo(memoText, metadata)
-  const block = await client.getBlock({ blockNumber: receipt.blockNumber })
-  const market = await readMarketAt(client, request.chainId, projectId.toString(), block.number, Number(block.timestamp))
-  await assertEntryRules(client, market)
-  verifyRecordedEntry(market, d.implementation, owner, amount, memo, metadata, receipt)
-}
-
 export async function prepareCreateMarket(
   input: MarketDefinition, chainId: number, account: Address,
 ): Promise<PreparedTransaction> {
@@ -450,7 +385,6 @@ export async function prepareCreateMarket(
       }
       if (await freshFee() !== fee) throw new Error('The creation fee changed. Review a fresh transaction.')
     },
-    verifyReceipt: receipt => verifyLaunchReceipt(client, chainId, owner, published, receipt),
   }
 }
 
@@ -512,6 +446,5 @@ export async function prepareEntry(
         ? [{ label: current.ranges[index].label, value: String(quantity) }] : []),
     ],
     reverify: async () => { await refresh() },
-    verifyReceipt: receipt => verifyEntryReceipt(current, owner, expected, receipt),
   }
 }

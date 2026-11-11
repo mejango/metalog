@@ -160,3 +160,85 @@ Resources: `/Users/jango/Documents/jb/v6/evm/AGENTS.md`, `/Users/jango/Documents
 Review: both regression tests failed on the old code (lifecycle fork: "Preparing market…" shown with the review dialog open; activity.spec: older page gone after a market refresh) and pass after the fixes. metalog-1/2/17 wait for SDK 6.x adoption (writeHold, useReviewedRun); metalog-2 has two verified recovery dead ends that adoption closes.
 
 Codex pass 1 (Medium): a page fetch started in the same commit as the snapshot reread cancelled it (TanStack `cancelRefetch`), so new head activity never appeared while more pages remained. Automatic paging now waits until the loaded pages are read at the current snapshot block. Test: activity.spec "a market refresh finishes before the feed reads further back", failed on the old code, passes now.
+
+# State machines wave 3: SDK write hold and Signa connect (2026-11-09)
+
+Resources: as above, plus scratchpad `sm/BRIEF3.md` and `sm/sdk.md`. Branch `state-machines-3-2026-11-09` stacked on `state-machines-2026-11-09`; SDK core 6.0.0 tarball and `@me.jango/signa` 0.4.0 installed with `--no-save`.
+
+## Plan refinement
+- **Objective:** Metalog sends and recovers exactly like the standard clients: `createWriteHold` + `useReviewedRun`, no legacy journal, no metalog-only SDK knobs. Closes metalog-1, metalog-2 (both dead ends) and metalog-17.
+- **System fit:** Core owns review, simulation, gas (`gasWithHeadroom`, no local clamp), the hold, exits and receipts. Metalog keeps calldata, `reverify`, receipt effects (`verifyReceipt`) and its intents: one hold per market, one per creation definition. Connect moves to Signa.
+- **Reuse and simplicity:** The old journal keys are dropped with no importer. One status card, one review dialog over the SDK model, the SDK's held notice per chain.
+- **Verification:** Hold scope and exit tests (failed on the old module), `npm run check`, browser suite, lifecycle fork.
+
+- [x] Scope and dead-end tests first (market A held, B and other creations proceed; no-hash exit; cancelled replacement exit)
+- [x] Transactions provider on useReviewedRun; components send under intents; review dialog renders the model
+- [x] Effects after settle: verifyReceipt, then refresh reads and Recently opened, on the direct and the held path
+- [x] Delete the journal, legacy recovery verifier and their tests; port fork integration to sendReviewed
+- [x] Connect from @me.jango/signa
+- [x] Gates, draft PR (no merge)
+
+Review: the hold tests failed on the old module and pass. `npm run check` (174 unit), the browser suite (73 passed, 1 skipped), fork integration on Base Sepolia (5) and the lifecycle fork (17 transactions) pass against the tarball. The lifecycle fork caught one real gap, which is fixed: the run showed confirmed before the action's receipt checks finished, and a click in between was dropped silently. The action now stays disabled until they finish. A lost wallet reply stays held with no hash until the wallet's hash is attached; the hold does not find it by nonce alone. SDK gaps: Defifa owners are 721-only; `useHeldWrites` has no `onSettled`.
+
+Published SDK: package.json now pins `@bananapus/nana-sdk-core` 6.1.0 and `@me.jango/signa` 0.5.0 (the branch imports `review/react` and Signa, which 2.29.0 and the old pins lacked) and drops the unused `@bananapus/nana-sdk-connect`. Lockfile integrity matches `npm view`; after `npm ci`, `npm run check` (174 unit) and the browser suite (75 passed, 1 skipped) pass.
+
+# Wave 3 Codex pass 1 fixes (2026-11-09)
+
+Resources: as above; report scratchpad `sm/codex/metalog3-pass1.md`. Finding 1 (import legacy keys) is dismissed by jango's ruling: metalog has no legacy code.
+
+## Plan refinement
+- **Objective:** A mined write is its outcome: no post-receipt read failure re-enables a send, a still-confirming write hands the form back, every background hold (confirming too) is shown, and a lost wallet reply can be settled from the hash the wallet shows.
+- **System fit:** The Transactions provider stays the one owner of what a run means for its form; the SDK hold stays the one authority on sends, repeats (one hold per intent) and settlement. jbm/revnet: the hold's settlement is the outcome (no app effect gate); revnet lists every held state; revnet's markee recovery attaches a found hash through `handle.attachHash`.
+- **Reuse and simplicity:** Refactor first: move the run's outcome for its form into one function in `src/lib/transaction.ts` (no behavior change), then fix on it. Reuse the SDK's `HeldWritesNotice`, `attachHash` and origin/main's hash-input labels. No new dependency.
+- **Evidence and unknowns:** Code reading of SDK 6.1.0 `useReviewedRun` (acknowledges a shown done; resolves `receipt` after its in-place follow; `busy` stays true while confirming). Browser tests seed real SDK hold records against a plain local Anvil.
+- **Verification:** Unit tests on the outcome function (#2, #5) and browser tests on reload visibility (#4) and hash recovery (#3), each failing first; `npm run check`; `npm run test:browser`.
+- **Resource budget:** One worktree, suites one at a time; replan if seeding hold records across Node and the browser does not round-trip.
+
+- [x] REFACTOR: one function for a run's outcome
+- [x] FIX #2: a mined write's failed effect check reports, never re-enables its send
+- [x] FIX #5: a still-confirming write hands back the form; later settlement applies separately
+- [x] FIX #4: background holds show while confirming
+- [x] FIX #3: attach the wallet's hash to a no-hash hold
+- [ ] Gates, push (no merge)
+
+Review: each new test failed on the code before its fix. Unit (`test/transaction.test.ts`, "a run's outcome for its form"): a failed effect check or receipt read rejected the run (#2); a still-confirming run never returned (#5). Browser (`test/browser/held-writes.spec.ts`, real SDK hold records against a plain local Anvil): a confirming write found after a reload showed nothing (#4); a lost reply offered no hash input (#3). Standard practice: jbm and revnet treat the hold's settlement as the outcome with no app effect gate; revnet lists every held state; revnet's markee recovery attaches a found hash with `handle.attachHash`. The receipt effect check stays as a report in the status card; a held write settled after a reload applies the same effects without it (no reviewed request to check against). `npm run check` (177 unit), the browser suite (79 passed, 1 skipped) and the lifecycle fork (rerun alone after one local Anvil ECONNRESET under load) pass.
+
+Follow-up ruling (jango via coordinator): no app-level effect check after a write mines, as in jbm and revnet. `verifyReceipt`, the launch and lifecycle receipt checks and the call decoder leave production code for `test/integration/effects.ts` (`checkReceiptEffects`, `verifyLifecycleReceipt`, `decodeDefifaTransactionCall`); unit and fork tests use them. Entry evidence keeps `verifyRecordedEntry`, which the entries route still uses. `runOutcome` takes no prepared write; a failed receipt read still reports in the status card. The entries browser test now scrolls to the feed before counting older activity: its mobile run failed on the pushed head too, since older pages load only as the list end nears the screen.
+Gates: `npm run check` (177 unit), the browser suite (79 passed, 1 skipped) and fork integration (9 passed).
+
+Codex pass 2 (accepted the legacy and effect-check rulings): (1) two forms could hand writes to the one runner and the later review replaced the earlier dialog; the provider now claims the handoff synchronously (`exclusive`) and refuses a second with the SDK's busy line. (2) A write that mined while away settled inside the held list before the follow effect listed it; successes the held views carry now apply too, deduplicated by chain and hash. (3) A handed-back write's later receipt now completes the form that sent it, unless that form started another operation since. Tests: unit "refuses a second handoff…", "completes the submitting form with a delayed receipt…"; browser "a creation that mined while away opens its market and joins Recently opened" (a stand-in deployer on local Anvil emits LaunchGame). Gates: `npm run check` (179 unit), browser suite (81 passed, 1 skipped).
+
+Codex pass 3: (1) a refused retry replaced the run whose `ended()` carried the form's completion, and bumped the form's operation, so a delayed transfer never closed its form. Completion now follows the write's own hold reservation (`heldSuccess`, acknowledged once its form completes), and only a newer write the form sent supersedes it. Test: unit "completes the form that sent a handed-back write once its hold settles, through a refused retry" (real SDK hold and send gate; failed on the previous `runOutcome`). The React `useReviewedRun` hook itself cannot mount in this repo's Node test environment; the fix no longer depends on its run. (2) A settled write's receipt read could fail once and the creation result was dropped; `settledReceipt` now reads again until it reads, reporting each failure. Test: browser "a creation that mined while away still opens its market when the receipt reads after it settled fail for a while". Gates: `npm run check` (178 unit), browser suite (83 passed, 1 skipped).
+
+Codex pass 4: both bugs came from completing the form by polling the hold's latest settlement. Refactor first: the form's run logic moved from `usePreparedWrite` into `formRuns` (no behavior change), so its interleavings run in unit tests against the real SDK hold and `sendReviewed`. (a) `heldSuccess` takes the settlement tagged with its own reservation when the hold settles it, from the hold's event (`subscribe`, emitted before anything acknowledges it) or its own `followHeldWrite` read, the way the SDK's own `followSent` scopes by reservation; it no longer re-reads `settlementOf`. Test: "completes the form from its own settlement after another reader acknowledged it and a new reservation replaced it". (b) Each form has a generation that the original's settlement bumps at that moment (`onSuccess` → `form.complete`); a send begun before it is dropped after `prepare()` and at the runner's last gate (`assertWriteState` → `refuseStale`, a quiet cancel). Tests: "drops a retry still preparing when the original confirms", "drops a retry already past preparation when the original confirms before its wallet opens" (the hold refuses a retry while the original is held, so this window is before its hold check). Each failed first (no completion; a second `sendTransaction`). Gates: `npm run check` (181 unit), browser suite (83 passed, 1 skipped).
+
+Codex pass 5: (1) the success bumped the form's generation, but the draft stayed sendable until the app's receipt read finished, so a retry started in that window sent a second transfer. `formRuns` now closes the form when the success is captured (`complete`, before any receipt read): no run starts until `later` finishes, and `succeeded` resets the draft at once (the lifecycle form's row action and selection). `runOutcome` reports a failed effect apply and still completes the form, so the form can't stay closed forever. Test: "refuses a retry started after the original settled while the app still reads its receipt" (it failed first with a second `sendTransaction`). (2) Cross-tab settlement loss when the namespace is reused is assigned to SDK #296 (settlement per reservation); there is no metalog workaround. Gates: `npm run check` (182 unit), browser suite (83 passed, 1 skipped).
+
+SDK #296 (per-reservation settlement, head b66b9e6, tested from its local tarball; the dependency bump comes with its publish): `heldSuccess` and its subscribe capture are gone. `heldWrite` follows the write's own reservation (`followHeldWrite({ reservation })`) and reads its saved settlement (`settlementOf(reservation)`), which holds even after a later reservation of the market replaced it, in this tab or another. The form asks that same saved settlement at each check (run start, after `prepare()`, at the last gate before the wallet), so a success that another reader or tab acknowledged before this tab's follow looked still closes the form. Test: "completes its form after another tab settled, acknowledged and replaced it while this tab slept" (two isolated SDK storage instances sharing durable storage, with queued storage events; failed on the previous capture). Gates against the tarball: `npm run check` (183 unit), browser suite (83 passed, 1 skipped).
+
+
+# Form writes on core's useReviewedRun (pass 7)
+
+Resources: `/Users/jango/Documents/jb/v6/evm/AGENTS.md`, `/Users/jango/Documents/jb/v6/evm/tasks/lessons.md`, `/Users/jango/Documents/jb/v6/evm/workflow/ponytail/SKILL.md`, `/Users/jango/Documents/jb/v6/evm/docs/PLAN_REFINEMENT.md`; local `AGENTS.md`, `docs/DESIGN.md`. Worktree `.worktrees/sm-metalog`, branch `state-machines-3-2026-11-09`.
+
+- **Outcome:** a form completes when, and only when, its own write succeeds, however that write settles (in the run, still confirming, lost reply recovered by hash), across account switches; no local state can block later forms.
+- **System fit:** revnet's practice: each form owns a `useReviewedRun`; the run follows its own held step and shows `done` when it settles. Core's `createReviewQueue` serializes reviews (replaces `exclusive`). Provider keeps the review dialog, held-write notices with hash recovery, and receipt effects (one memoized `settle` per hash).
+- **Deleted:** `formRuns`, `runOutcome`, `heldWrite`/`HandedBack`, `SubmittingForm`, `refuseStale`, `exclusive`, the provider's single runner.
+- **Kept local (SDK gap):** a run refused by a hold the form did not make must not start, because core's run follows whatever its intent holds after any failure and would complete the wrong form. The hook checks the hold before the run, and drops its binding on a `WriteHeldError` race. Also a per-hook `completing` gate while its receipt effects apply.
+- **Verification:** failing-first pass 7 regression (account switch, newer write completes, older recovered, next submit runs); pass 5/6 regressions against the hook; `npm run check`, `test:browser`, fork lifecycle suite.
+- **Recovery:** branch only; no merge.
+
+- [x] Pass 7 regression failing on the current layer
+- [x] Hook + provider migration, local layer deleted
+- [x] Pass 5/6/7 regressions on the hook
+- [x] check, browser, fork suites; commit, push
+
+Review: the pass 7 regression failed on `formRuns` (the next submission never prepared). Forms now run through their own `useReviewedRun` (`src/lib/form-write.ts`), and reviews go through core's `createReviewQueue`. The local layer is deleted. The remaining local logic is a hold check before the run, because core's run adopts whatever its intent holds after a refused run, plus a per-form completing gate. Regressions for passes 5, 6 and 7 run against the hook, and each guard was mutation-checked. `npm run check` (179 tests), `test:browser` (83 passed, 1 skipped) and the fork lifecycle suite all pass.
+
+## SDK 6.3.0 adoption (pass 8)
+
+- [x] Pass 8 regression (two forms queued on one market, the transfer's lost reply recovered and acknowledged by another reader, the retry) failed on 6.2.0 with the local guards: two sends.
+- [x] Bumped `@bananapus/nana-sdk-core` to 6.3.0 at an exact version. Deleted the pre-run hold check, the `WriteHeldError` claim drop, the owner/closing gate and the `active` ref. Core's follow rules and own-success gate replace them.
+- [x] Regressions for passes 5 through 8 run through the SDK path with `lapsingLocksForTests` installed as `navigator.locks`.
+
+Review: two local lines remain, each needed by an SDK-path test that fails without it. `completing` keeps the form busy while its shown-done success applies its receipt; core already counts that write as shown, so a new run would send again. The `completed` generation drops a retry whose preparation, which happens outside core's run, began before its write completed. `npm run check` (180 tests), `test:browser` (83 passed, 1 skipped) and the fork lifecycle suite pass on Node 22.23.4.

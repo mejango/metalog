@@ -1,228 +1,269 @@
 'use client'
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type PropsWithChildren } from 'react'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type PropsWithChildren } from 'react'
 import Link from 'next/link'
+import { useQueryClient } from '@tanstack/react-query'
 import { getAccount, getWalletClient, switchChain } from '@wagmi/core'
 import { useAccount } from 'wagmi'
-import { type Hex, type TransactionReceipt, type WalletClient } from 'viem'
-import { TransactionReviewCancelledError, transactionMessage } from '@bananapus/nana-sdk-core/review'
+import { isHash, type Address, type Hex, type TransactionReceipt, type WalletClient } from 'viem'
 import {
-  executeTransaction, matchesPrepared, readPendingTransaction, recoverTransaction, TRANSACTION_STORAGE_KEY, TRANSACTION_JOURNAL_STORAGE_KEY, readPendingAttempts, creationAttemptStorage, marketAttemptStorage, marketIntentId, pendingBlocksMarket, pendingBlocksNewCreation, selectedTransactionStatus,
-  type PendingTransaction, type PendingAttempt, type PreparedTransaction, type TransactionRuntime, type TransactionStatus,
-} from '@/lib/transaction'
-import { chainForId, publicClientForChain } from '@/lib/wallet'
+  createReviewQueue, followHeldWrite, registerReviewHandler, REVIEWED_ACCOUNT_CHANGED_LINE, ReviewLineError, viemWalletAdapter,
+  type ReviewConfirmation, type ReviewedRunStatus, type ReviewPrompt, type WriteHoldClient, type WriteHoldState,
+} from '@bananapus/nana-sdk-core/review'
+import { HeldWritesNotice, useHeldWrites, type UseReviewedRunResult } from '@bananapus/nana-sdk-core/review/react'
+import { holds, settledReceipt } from '@/lib/transaction'
+import { useFormWrite } from '@/lib/form-write'
+import { chainForId, publicClientForChain, SUPPORTED_CHAINS } from '@/lib/wallet'
+import { rememberMarket } from '@/lib/recent-markets'
 import { TransactionReview } from '@/components/TransactionReview'
 import { wagmiConfig } from './Providers'
-import { classifyTransactionScope, transactionMatchesMarketScope, type MarketTransactionScope } from '@/lib/transaction-scope'
+
+/** What the transaction status shows for the form that ran last. */
+type RunView = {
+  line: string | null
+  error: string | null
+  hash: Hex | null
+  chainId: number | null
+  /** The hold record its run shows, so the held-writes notice does not list it twice. */
+  heldId?: string
+  exitAction: UseReviewedRunResult['exitAction']
+  sendAgainAction: UseReviewedRunResult['sendAgainAction']
+  reset: () => void
+  /** Its write succeeded: the status outlives the form (a creation opens its market). */
+  done: boolean
+}
 
 type TransactionContextValue = {
-  execute: (prepared: PreparedTransaction) => Promise<TransactionReceipt | null>
-  executeNewMarket: (prepared: PreparedTransaction, attemptId: string) => Promise<TransactionReceipt | null>
-  executeMarket: (prepared: PreparedTransaction, scope: MarketTransactionScope) => Promise<TransactionReceipt | null>
-  hasPendingForMarket: (scope: MarketTransactionScope) => boolean
-  canCreateNewMarket: boolean
-  isCreationPending: (attemptId: string) => boolean
-  recover: (hash?: Hex, prepared?: PreparedTransaction) => Promise<TransactionReceipt | null>
-  pending: PendingTransaction | null
-  status: TransactionStatus
-  error: string | null
-  busy: boolean
+  /** Reads a succeeded write's receipt and applies its effects, once per hash however it is reported. */
+  settle: (chainId: number, hash: Hex) => Promise<TransactionReceipt>
+  /** A form's run started: the status shows that form's run from now on. */
+  claim: (form: symbol) => void
+  /** A form's run as it stands; shown only while that form ran last. */
+  show: (form: symbol, view: RunView | null) => void
+  /** The form unmounted: its run ended with it, and only a success stays shown. */
+  leave: (form: symbol) => void
 }
 const TransactionContext = createContext<TransactionContextValue | null>(null)
 
-export function useTransactions() {
+function useTransactions() {
   const value = useContext(TransactionContext)
   if (!value) throw new Error('Transactions must be inside Providers.')
   return value
 }
 
-/** Prepare a write, hand it to the transaction runner, then apply its confirmed receipt. One run at a time; `preparing` ends at the hand-off. */
+export const EXTERNAL_WALLET_LINE = 'Defifa transactions need an external wallet. Signa currently provides sign-in only.'
+const connector = () => getAccount(wagmiConfig).connector
+const refuseSigna = () => { if (connector()?.id === 'juicebox-center') throw new ReviewLineError(EXTERNAL_WALLET_LINE) }
+
+const deps = {
+  adapter: viemWalletAdapter({
+    walletClient: () => {
+      const { address, chainId, connector } = getAccount(wagmiConfig)
+      return getWalletClient(wagmiConfig, { account: address, chainId: chainId as never, connector }) as Promise<WalletClient>
+    },
+    account: () => getAccount(wagmiConfig).address,
+    chainId: () => getAccount(wagmiConfig).chainId,
+    isSafe: () => false,
+    switchChain: chainId => switchChain(wagmiConfig, { chainId: chainForId(chainId).id }),
+    connector: () => connector()?.uid,
+  }),
+  clientFor: publicClientForChain,
+  hold: holds,
+  engine: () => import('@bananapus/nana-sdk-core/review'),
+  guard: refuseSigna,
+}
+
+/** A run reviewed under one connector sends nothing once it changes; Signa never sends. */
+function walletGate() {
+  const uid = connector()?.uid
+  return () => {
+    refuseSigna()
+    if (connector()?.uid !== uid) throw new ReviewLineError(REVIEWED_ACCOUNT_CHANGED_LINE)
+  }
+}
+
+const STATUS_LINES: Partial<Record<ReviewedRunStatus, string>> = {
+  simulating: 'Checking transaction…', signing: 'Confirm in your wallet…', receipt: 'Checking confirmation…', done: 'Transaction confirmed.',
+}
+
+/**
+ * A form's writes: prepare one, review and send it in the form's own run, and once it succeeds (however it settled) apply
+ * its receipt and run `done`. Each form owns its run, as in revnet; the page's transaction status shows the form that ran
+ * last.
+ */
 export function usePreparedWrite() {
-  const [preparing, setPreparing] = useState(false)
-  const [error, setError] = useState('')
-  const active = useRef(false)
-  const run = useCallback(async <T,>(prepare: () => Promise<T>, send: (prepared: T) => Promise<TransactionReceipt | null>,
-    settle: (receipt: TransactionReceipt) => void | Promise<void>, fallback: string) => {
-    if (active.current) return
-    active.current = true
-    setError('')
-    setPreparing(true)
-    try {
-      const prepared = await prepare()
-      setPreparing(false)
-      const receipt = await send(prepared)
-      if (receipt) await settle(receipt)
-    } catch (cause) { setError(cause instanceof Error ? cause.message : fallback) }
-    finally { active.current = false; setPreparing(false) }
-  }, [])
-  return { preparing, error, setError, run }
-}
-
-const identity = () => {
-  const current = getAccount(wagmiConfig)
-  return { address: current.address, chainId: current.chainId, connectorUid: current.connector?.uid, isSigna: current.connector?.id === 'juicebox-center' }
-}
-
-/** Native cross-tab locks and the durable record prevent a second send during uncertainty. */
-async function withTransactionLock<T>(action: () => Promise<T>): Promise<T> {
-  if (!navigator.locks) throw new Error('This browser cannot preserve transaction coordination. Use a current browser to transact.')
-  return navigator.locks.request('metalog:transaction', { ifAvailable: true }, lock => {
-    if (!lock) throw new Error('Another Metalog tab is handling a transaction. Continue there.')
-    return action()
-  })
+  const { address } = useAccount()
+  const { settle, claim, show, leave } = useTransactions()
+  const [form] = useState(() => Symbol('form'))
+  const write = useFormWrite({ deps: address ? { ...deps, account: address } : null, settle, gate: walletGate })
+  const { runner } = write
+  const line = runner.status === 'held' ? runner.held?.line ?? null : runner.status === 'failed' ? null : STATUS_LINES[runner.status] ?? null
+  const error = runner.status === 'failed' ? runner.error : null
+  const heldId = runner.held?.state && runner.held.state.status !== 'clear' ? runner.held.state.record.id : undefined
+  const latest = useRef(runner)
+  useLayoutEffect(() => { latest.current = runner })
+  useEffect(() => {
+    show(form, line || error || heldId ? {
+      line, error, hash: runner.hash, chainId: write.chainId, heldId,
+      exitAction: runner.exitAction, sendAgainAction: runner.sendAgainAction, reset: () => latest.current.reset(),
+      done: runner.status === 'done',
+    } : null)
+    // The actions are the run's own for the state these keys name.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form, show, line, error, heldId, runner.hash, write.chainId, runner.exitAction?.label, runner.sendAgainAction?.label])
+  useEffect(() => () => leave(form), [form, leave])
+  const { run: start } = write
+  const run: typeof start = useCallback(async (...args) => { claim(form); await start(...args) }, [claim, form, start])
+  return { preparing: write.preparing, running: write.busy, error: write.error, setError: write.setError, run }
 }
 
 export function Transactions({ children }: PropsWithChildren) {
-  const [attempts, setAttempts] = useState<PendingAttempt[]>([])
-  const [selectedAttempt, setSelectedAttempt] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const pending = attempts[0]?.transaction ?? null
-  const selected = attempts.find(attempt => attempt.attemptId === selectedAttempt) ?? (!busy ? attempts[0] : undefined)
-  const selectedPending = selected?.transaction ?? null
-  const [status, setStatus] = useState<TransactionStatus>('idle')
-  const [error, setError] = useState<string | null>(null)
-  const [review, setReview] = useState<{ request: PreparedTransaction; gas: bigint } | null>(null)
-  const [recoveryHash, setRecoveryHash] = useState('')
-  const deciding = useRef<((approved: boolean) => void) | null>(null)
-  const locked = useRef(false)
-  const preparedRef = useRef<PreparedTransaction | undefined>(undefined)
-  const [lastSent, setLastSent] = useState<{ hash: Hex; chainId: number } | null>(null)
-  const [recoveredMarket, setRecoveredMarket] = useState<string | null>(null)
-  const reviewIdentity = useRef<ReturnType<typeof identity> | null>(null)
-  const { address, chainId, connector } = useAccount()
+  const queryClient = useQueryClient()
+  const { address } = useAccount()
+  const [created, setCreated] = useState<string | null>(null)
+  /** A mined write whose receipt or effects could not be checked here. */
+  const [unchecked, setUnchecked] = useState('')
 
-  const decide = useCallback((approved: boolean) => {
-    const resolve = deciding.current
-    const expected = reviewIdentity.current
-    const current = identity()
-    deciding.current = null
-    reviewIdentity.current = null
-    setReview(null)
-    resolve?.(approved && !!expected && current.address === expected.address && current.chainId === expected.chainId && current.connectorUid === expected.connectorUid)
-  }, [])
+  // One review at a time, in request order; a change of account cancels what was opened under the last one.
+  const [queue] = useState(() => createReviewQueue<ReviewPrompt, ReviewConfirmation | null>())
+  const review = useSyncExternalStore(queue.subscribe, queue.getState, queue.getState).active
+  useEffect(() => { queue.setContext({ account: address }) }, [queue, address])
+  useEffect(() => {
+    const unregister = registerReviewHandler(prompt => queue.request(prompt, { declined: null, approves: result => result !== null, signal: prompt.signal }))
+    return () => { unregister(); queue.cancelAll() }
+  }, [queue])
 
-  useEffect(() => {
-    const expected = reviewIdentity.current
-    if (expected && (address !== expected.address || chainId !== expected.chainId || connector?.uid !== expected.connectorUid)) decide(false)
-  }, [address, chainId, connector?.uid, decide])
-  useEffect(() => () => { deciding.current?.(false); deciding.current = null }, [])
-  useEffect(() => {
-    const restore = () => {
-      try {
-        const saved = readPendingAttempts(window.localStorage)
-        setAttempts(saved)
-        if (!locked.current) setStatus(saved[0]?.transaction.phase ?? 'idle')
-      } catch (cause) { setError(cause instanceof Error ? cause.message : 'The saved transaction is unavailable.'); setStatus('error') }
+  /** What every confirmed write changes here, however it settled: the market's reads, and a created market's place in Recently opened. */
+  const settled = useCallback(async (chainId: number, receipt: TransactionReceipt) => {
+    void queryClient.invalidateQueries({ queryKey: ['market-play'] })
+    void queryClient.invalidateQueries({ queryKey: ['market-activity'] })
+    void queryClient.invalidateQueries({ queryKey: ['markets', chainId] })
+    const { createdMarketId } = await import('@/lib/defifa')
+    let projectId: string
+    try { projectId = createdMarketId(receipt) } catch { return } // Only a creation launches a game.
+    rememberMarket(chainId, projectId)
+    void queryClient.invalidateQueries({ queryKey: ['recent-markets'] })
+    setCreated(`/markets/${chainId}/${projectId}`)
+  }, [queryClient])
+
+  /**
+   * One settlement per chain and hash, whoever reports it (a form's run, a follow, a hash entry): its receipt, read until
+   * it reads, with the effects applied. A failure to apply them is reported, never thrown, and left for the next report.
+   */
+  const receipts = useRef(new Map<string, Promise<TransactionReceipt>>())
+  const settle = useCallback((chainId: number, hash: Hex) => {
+    const key = `${chainId}:${hash.toLowerCase()}`
+    let receipt = receipts.current.get(key)
+    if (!receipt) {
+      receipt = settledReceipt(publicClientForChain(chainId), hash, setUnchecked).then(async read => {
+        try { await settled(chainId, read) }
+        catch (cause) {
+          receipts.current.delete(key)
+          setUnchecked(cause instanceof Error ? cause.message : 'This transaction’s result could not be applied here.')
+        }
+        return read
+      })
+      receipts.current.set(key, receipt)
     }
-    restore()
-    const changed = (event: StorageEvent) => { if (event.key === TRANSACTION_STORAGE_KEY || event.key === TRANSACTION_JOURNAL_STORAGE_KEY || event.key === null) restore() }
-    window.addEventListener('storage', changed)
-    return () => window.removeEventListener('storage', changed)
+    return receipt
+  }, [settled])
+  const settledHash = useCallback(async (chainId: number, hash: Hex) => { await settle(chainId, hash) }, [settle])
+
+  /** The form that ran last, whose run the status shows. */
+  const owner = useRef<symbol | null>(null)
+  const [status, setStatus] = useState<RunView | null>(null)
+  const claim = useCallback((form: symbol) => {
+    owner.current = form
+    setStatus(null)
+    setCreated(null)
+    setUnchecked('')
+  }, [])
+  const show = useCallback((form: symbol, view: RunView | null) => { if (owner.current === form) setStatus(view) }, [])
+  const leave = useCallback((form: symbol) => {
+    if (owner.current !== form) return
+    owner.current = null
+    setStatus(view => view?.done ? { ...view, heldId: undefined, exitAction: null, sendAgainAction: null } : null)
   }, [])
 
-  const onStatus = useCallback((next: TransactionStatus, saved?: PendingTransaction | null) => {
-    setStatus(next)
-    if (saved !== undefined) setAttempts(readPendingAttempts(window.localStorage))
-    if (saved?.hash) setLastSent({ hash: saved.hash, chainId: saved.chainId })
-  }, [])
-
-  async function run(action: () => Promise<TransactionReceipt>): Promise<TransactionReceipt | null> {
-    if (locked.current) return null
-    locked.current = true
-    setBusy(true)
-    setError(null)
-    try { return await withTransactionLock(action) }
-    catch (cause) {
-      if (cause instanceof TransactionReviewCancelledError) setStatus('idle')
-      else setError(transactionMessage(cause instanceof Error ? cause.message : 'The transaction could not be checked.'))
-      try {
-        const saved = readPendingAttempts(window.localStorage)
-        setAttempts(saved)
-        if (!(cause instanceof TransactionReviewCancelledError)) setStatus(saved.find(attempt => attempt.attemptId === selectedAttempt)?.transaction.phase ?? saved[0]?.transaction.phase ?? 'error')
-      } catch { setStatus('error') }
-      return null
-    } finally { locked.current = false; setBusy(false) }
-  }
-
-  async function execute(prepared: PreparedTransaction, attemptId?: string, marketScope?: MarketTransactionScope) {
-    return run(async () => {
-      const previous = readPendingAttempts(window.localStorage)
-      if (attemptId && (classifyTransactionScope(prepared).kind !== 'creation' || pendingBlocksNewCreation(previous))) throw new Error('Check the unrecognized earlier transaction before creating a market.')
-      if (marketScope && (!transactionMatchesMarketScope(prepared, marketScope) || pendingBlocksMarket(previous, marketScope))) throw new Error('Check the pending transaction for this market before submitting another action.')
-      const storage = attemptId ? creationAttemptStorage(window.localStorage, attemptId) : marketScope ? marketAttemptStorage(window.localStorage, marketScope) : window.localStorage
-      setSelectedAttempt(marketScope ? marketIntentId(marketScope) : attemptId ?? null)
-      setRecoveryHash('')
-      preparedRef.current = prepared
-      setLastSent(null)
-      setRecoveredMarket(null)
-      let wallet: WalletClient | undefined
-      const runtime: TransactionRuntime = {
-        storage,
-        client: publicClientForChain(prepared.chainId),
-        identity,
-        review: (request, gas) => new Promise(resolve => {
-          reviewIdentity.current = identity()
-          deciding.current = resolve
-          setReview({ request, gas })
-        }),
-        switchChain: async target => {
-          if (getAccount(wagmiConfig).chainId !== target) await switchChain(wagmiConfig, { chainId: chainForId(target).id })
-          wallet = await getWalletClient(wagmiConfig, { chainId: chainForId(target).id })
-        },
-        send: request => {
-          if (!wallet) throw new Error('Reconnect your wallet before sending.')
-          return wallet.sendTransaction({ account: request.account, chain: chainForId(request.chainId), to: request.to, data: request.data, value: request.value, gas: request.gas })
-        },
-        onStatus,
-      }
-      return executeTransaction(prepared, runtime)
-    })
-  }
-
-  async function recover(hash?: Hex, prepared?: PreparedTransaction) {
-    return run(async () => {
-      const storage = selected?.transaction.marketScope ? marketAttemptStorage(window.localStorage, selected.transaction.marketScope) : selected?.attemptId ? creationAttemptStorage(window.localStorage, selected.attemptId) : window.localStorage
-      const saved = readPendingTransaction(storage)
-      if (!saved) throw new Error('There is no pending transaction.')
-      if (prepared && !matchesPrepared(saved, prepared)) throw new Error('This action differs from the saved transaction.')
-      let verifier = prepared ?? (preparedRef.current && matchesPrepared(saved, preparedRef.current) ? preparedRef.current : undefined)
-      if (!verifier?.verifyReceipt) {
-        const { verifyDefifaTransactionReceipt } = await import('@/lib/defifa')
-        const request = { chainId: saved.chainId, account: saved.account, to: saved.to, data: saved.data,
-          value: BigInt(saved.value), title: saved.title, details: saved.details }
-        verifier = { ...request, verifyReceipt: receipt => verifyDefifaTransactionReceipt(request, receipt) }
-      }
-      const receipt = await recoverTransaction({ storage, client: publicClientForChain(saved.chainId), onStatus }, hash, verifier)
-      setRecoveryHash('')
-      // A creation recovered after reload must return the user to its new game.
-      const { createdMarketId } = await import('@/lib/defifa')
-      try { setRecoveredMarket(`/markets/${saved.chainId}/${createdMarketId(receipt)}`) }
-      catch { setRecoveredMarket(null) } // Other verified actions do not launch a game.
-      return receipt
-    })
-  }
-
-  const messages: Partial<Record<TransactionStatus, string>> = {
-    simulating: 'Checking transaction…', signing: 'Confirm in your wallet…', pending: busy ? 'Checking confirmation…' : 'Submitted. Check confirmation.',
-    unknown: 'Submission is unconfirmed. Check the original transaction before sending again.', success: 'Transaction confirmed.',
-  }
-  const shownStatus = selectedTransactionStatus(status, busy, selectedPending)
-  const shownHash = selectedPending?.hash ?? (!selectedPending ? lastSent?.hash : undefined)
-  const shownChain = selectedPending?.chainId ?? lastSent?.chainId
-  const explorer = shownChain ? chainForId(shownChain).blockExplorers.default.url : undefined
-  return <TransactionContext.Provider value={{ execute: prepared => execute(prepared), executeNewMarket: (prepared, attemptId) => execute(prepared, attemptId), executeMarket: (prepared, scope) => execute(prepared, undefined, scope), hasPendingForMarket: scope => pendingBlocksMarket(attempts, scope), canCreateNewMarket: !pendingBlocksNewCreation(attempts), isCreationPending: attemptId => attempts.some(attempt => attempt.attemptId === attemptId), recover, pending, status, error, busy }}>
+  const explorer = status?.hash && status.chainId ? chainForId(status.chainId).blockExplorers.default.url : undefined
+  return <TransactionContext.Provider value={{ settle, claim, show, leave }}>
     {children}
-    {review && <TransactionReview request={review.request} gas={review.gas} decide={decide} />}
-    {(pending || error || messages[status]) && <aside id="transaction-status" tabIndex={-1} className="transaction-status" aria-label="Transaction status">
-      {attempts.length > 1 && <label>Pending transaction<select aria-label="Pending transaction" value={selected?.attemptId ?? 'legacy'} onChange={event => { const id = event.target.value === 'legacy' ? null : event.target.value; setSelectedAttempt(id); setRecoveryHash(''); setRecoveredMarket(null); setLastSent(null); setError(null); setStatus(attempts.find(attempt => attempt.attemptId === id)?.transaction.phase ?? 'idle') }} disabled={busy}>{attempts.map(attempt => <option key={attempt.attemptId ?? 'legacy'} value={attempt.attemptId ?? 'legacy'}>{attempt.transaction.title} — {new Date(attempt.transaction.createdAt).toISOString()} — {attempt.transaction.id.slice(0, 8)}</option>)}</select></label>}
-      {messages[shownStatus] && <p role="status">{messages[shownStatus]}</p>}
-      {error && <p role="alert">{error}</p>}
-      {shownHash && explorer && <p><a href={`${explorer}/tx/${shownHash}`} target="_blank" rel="noreferrer">View transaction</a></p>}
-      {recoveredMarket && <p><Link href={recoveredMarket}>Open created market</Link></p>}
-      {pending && !busy && <>
-        {!shownHash && <label>Original transaction hash<input value={recoveryHash} onChange={event => setRecoveryHash(event.target.value)} autoComplete="off" spellCheck={false} /></label>}
-        <button type="button" onClick={() => void recover(shownHash ?? (recoveryHash as Hex))}>Check transaction</button>
-      </>}
+    {review && <TransactionReview model={review.payload.model}
+      decide={approved => void queue.finish(review.id, approved ? review.payload.confirmation : null)} />}
+    {address && SUPPORTED_CHAINS.map(chain => <HeldOnChain key={chain.id} chainId={chain.id} account={address} onSettled={settledHash}
+      shown={status?.heldId} />)}
+    {(status || created || unchecked) && <aside id="transaction-status" tabIndex={-1} className="transaction-status" aria-label="Transaction status">
+      {status?.line && <p role="status">{status.line}</p>}
+      {status?.error && <p role="alert">{status.error}</p>}
+      {unchecked && <p role="alert">{unchecked}</p>}
+      {status?.hash && explorer && <p><a href={`${explorer}/tx/${status.hash}`} target="_blank" rel="noreferrer">View transaction</a></p>}
+      {created && <p><Link href={created}>Open created market</Link></p>}
+      {status?.exitAction && <button type="button" onClick={() => void status.exitAction?.run().then(released => { if (released) status.reset() })}>{status.exitAction.label}</button>}
+      {status?.sendAgainAction && <button type="button" onClick={() => void status.sendAgainAction?.run()}>{status.sendAgainAction.label}</button>}
     </aside>}
   </TransactionContext.Provider>
+}
+
+/**
+ * Every write held for the account on one chain, after a reload or from another tab: the SDK's line and exit for each,
+ * one still confirming too, and each followed until it settles, so its effects apply here too. The open run follows and
+ * shows its own write.
+ */
+function HeldOnChain({ chainId, account, onSettled, shown }: {
+  chainId: number; account: Address; onSettled: (chainId: number, hash: Hex) => Promise<void>; shown?: string
+}) {
+  const client = publicClientForChain(chainId) as unknown as WriteHoldClient
+  const items = useHeldWrites({ hold: holds, chainId, account, client })
+  const keys = items.map(item => item.key).join('|')
+  useEffect(() => {
+    if (!keys) return
+    const stop = new AbortController()
+    for (const { handle } of holds.list({ account, chainId })) {
+      void followHeldWrite(handle, client, { signal: stop.signal }).then(end => {
+        if (end?.status === 'clear' && end.settled && 'hash' in end.settled && end.settled.result === 'success') void onSettled(chainId, end.settled.hash)
+      }, () => undefined)
+    }
+    return () => stop.abort()
+  }, [keys, account, chainId, client, onSettled])
+  // A write that settled before this list followed it (mined while away): its view still carries the success.
+  const successes = items.flatMap(({ view }) => view.settled && 'hash' in view.settled && view.settled.result === 'success' ? [view.settled.hash] : []).join('|')
+  useEffect(() => {
+    for (const hash of successes ? successes.split('|') as Hex[] : []) void onSettled(chainId, hash)
+  }, [successes, chainId, onSettled])
+  // As revnet lists them: every state the hold shows; the open run's write is in its own card.
+  const listed = items.filter(item => !(item.view.state && item.view.state.status !== 'clear' && item.view.state.record.id === shown))
+  // A lost wallet reply, the open run's too: the hold settles it from the hash the wallet shows.
+  const noHash = items.filter(item => item.view.state?.status === 'held-no-hash')
+  return <>
+    <HeldWritesNotice items={listed} className="transaction-status" />
+    {noHash.map(item => <AttachHash key={item.key} attach={hash => {
+      const handle = holds.list({ account, chainId }).find(entry => entry.key === item.key)?.handle
+      if (!handle) throw new Error('This transaction is no longer held.')
+      return handle.attachHash(client, hash)
+    }} onSettled={hash => onSettled(chainId, hash)} />)}
+  </>
+}
+
+/** The original hash of a write whose wallet reply was lost, as revnet's recovery attaches one; nothing is sent. */
+function AttachHash({ attach, onSettled }: { attach: (hash: Hex) => Promise<WriteHoldState>; onSettled: (hash: Hex) => Promise<void> }) {
+  const [hash, setHash] = useState('')
+  const [line, setLine] = useState('')
+  const [checking, setChecking] = useState(false)
+  const check = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!isHash(hash)) { setLine('Enter the complete transaction hash.'); return }
+    setChecking(true)
+    setLine('')
+    try {
+      const state = await attach(hash)
+      if (state.status !== 'clear') setLine(state.line)
+      else if (state.settled && 'hash' in state.settled && state.settled.result === 'success') await onSettled(state.settled.hash)
+    } catch (cause) { setLine(cause instanceof Error ? cause.message : 'This transaction could not be checked.') }
+    finally { setChecking(false) }
+  }
+  return <form className="transaction-status" onSubmit={event => void check(event)}>
+    <label className="field"><span>Original transaction hash</span><input value={hash} onChange={event => setHash(event.target.value.trim())} autoComplete="off" spellCheck={false} /></label>
+    <button type="submit" disabled={checking}>Check transaction</button>
+    {line && <p role="alert">{line}</p>}
+  </form>
 }

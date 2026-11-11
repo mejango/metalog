@@ -1,6 +1,6 @@
 import { concat, getAddress, keccak256, pad, toHex, type Abi, type Address, type Hex, type PublicClient } from 'viem'
-import artifacts from './defifa-deployments.json'
-import abi from './defifa-abi.json'
+import artifacts from './defifa-deployments.json' with { type: 'json' }
+import abi from './defifa-abi.json' with { type: 'json' }
 
 export type Deployment = {
   deployer: Address

@@ -56,6 +56,8 @@ export async function injectForkWallet(page: Page, fork: LocalFork) {
   const { DEFIFA_ABI, deploymentForChain, launchData } = owners
   const { loadMarketMetadata } = metadataOwner
   const transactions: Hex[] = []
+  /** The next send broadcasts, then its reply is lost before the page reads it, as a closed wallet connection loses it. */
+  let loseNextReply = false
   const chainSwitches: number[] = []
   const metadataPins: { cid: string; bodySha256: string; status: number; warmupGas: string; warmupMs: number }[] = []
   let pinRequests = 0
@@ -69,7 +71,10 @@ export async function injectForkWallet(page: Page, fork: LocalFork) {
     }
     if (new URL(fork.url).hostname !== '127.0.0.1') throw new Error('Browser writes must stay on the local fork.')
     const result = await fork.client.request(request as never)
-    if (request.method === 'eth_sendTransaction') transactions.push(result as Hex)
+    if (request.method === 'eth_sendTransaction') {
+      transactions.push(result as Hex)
+      if (loseNextReply) { loseNextReply = false; throw new Error('The wallet connection closed.') }
+    }
     return result
   })
   // App evidence/simulations normally use public RPC transports. Forward their JSON-RPC
@@ -183,6 +188,7 @@ export async function injectForkWallet(page: Page, fork: LocalFork) {
   }, { accounts: fork.accounts, chainId: fork.chainId })
   return {
     transactions,
+    loseNextReply: () => { loseNextReply = true },
     chainSwitches,
     metadataPins,
     select: (account: Address) => page.evaluate(address => {

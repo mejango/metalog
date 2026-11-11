@@ -7,9 +7,9 @@ import { MIN_NEW_UNIT_PRICE_WEI, parseDefaultDelegate, validateMarket } from '@/
 import { createRanges, createCustomRanges, parseRangeBoundaries, parseRangeBoundary, redistributeRangeBoundaries, rangeBoundaryIssues, DEFAULT_RANGE_COUNT, DEFAULT_RANGE_WIDTH, MIN_RANGE_COUNT, MAX_RANGE_COUNT, MIN_RANGE_WIDTH, MAX_RANGE_WIDTH, type RangeBin } from '@/domain/ranges'
 import { SUPPORTED_CHAINS } from '@/lib/wallet'
 import { downloadJson } from '@/lib/forecast'
-import { rememberMarket } from '@/lib/recent-markets'
 import { useWallet } from '@/providers/Providers'
-import { usePreparedWrite, useTransactions } from '@/providers/Transactions'
+import { usePreparedWrite } from '@/providers/Transactions'
+import { creationIntent } from '@/lib/transaction'
 import { RangePreview } from './RangePreview'
 import { RANGE_PRESETS, buildRangePreset, type RangePresetId } from '@/domain/range-presets'
 import { namedRanges, resizeRangeBoundaries, validateCustomRangeCount } from '@/domain/ranges'
@@ -56,12 +56,10 @@ export function CreateMarket({ now }: { now: number }) {
   const [price, setPrice] = useState('0.001')
   const [chainId, setChainId] = useState(8453)
   const isTestnet = SUPPORTED_CHAINS.some(chain => chain.id === chainId && 'testnet' in chain && chain.testnet)
-  const [attemptId, setAttemptId] = useState<string | null>(null)
-  const { preparing: busy, error, setError, run } = usePreparedWrite()
+  const { preparing, running, error, setError, run } = usePreparedWrite()
   const [showValidation, setShowValidation] = useState(false)
   const router = useRouter()
   const wallet = useWallet()
-  const transactions = useTransactions()
   const rangeDraft = useMemo(() => {
     try {
       if (rangeMode === 'advanced') {
@@ -188,22 +186,17 @@ export function CreateMarket({ now }: { now: number }) {
   }
   async function create(event: React.FormEvent) {
     event.preventDefault()
-    if (busy || transactions.busy || !transactions.canCreateNewMarket || (attemptId && transactions.isCreationPending(attemptId))) return
+    if (running) return
     setShowValidation(true)
     setError('')
     if (!draft.definition) return
     if (!wallet.address) { wallet.connect(); return }
     if (wallet.isSigna) { wallet.connect({ externalOnly: true }); return }
     const definition = draft.definition, account = wallet.address
-    await run(async () => {
-      const attempt = attemptId ?? crypto.randomUUID()
-      setAttemptId(attempt)
-      const { prepareCreateMarket } = await import('@/lib/defifa')
-      return { attempt, prepared: await prepareCreateMarket(definition, chainId, account) }
-    }, ({ attempt, prepared }) => transactions.executeNewMarket(prepared, attempt), async receipt => {
+    await run(async () => (await import('@/lib/defifa')).prepareCreateMarket(definition, chainId, account),
+      creationIntent(chainId, definition), async receipt => {
       const projectId = (await import('@/lib/defifa')).createdMarketId(receipt)
       if (!projectId) throw new Error('The transaction was confirmed, but its game ID could not be read. Check the transaction before creating again.')
-      rememberMarket(chainId, projectId)
       router.push(`/markets/${chainId}/${projectId}`)
     }, 'Market could not be prepared.')
   }
@@ -295,11 +288,9 @@ export function CreateMarket({ now }: { now: number }) {
       {isTestnet && <div className="field"><div><button type="button" onClick={applyShortSchedule}>Use short test schedule</button></div><small>{testSchedule ? <>Opens in 2–3 minutes, with 10 minutes for entry and {(testSchedule.resolvesAt - testSchedule.entryClosesAt) / 60} minutes for observation.</> : 'Preserves the observation duration entered above.'} Results still take at least 1 day to settle.</small>{scheduleError && <small className="error" role="alert">{scheduleError}</small>}</div>}
       <p className="hint">Payouts follow the ratified result. Entry can be refunded while minting is open.</p>
       <div className="actions">
-        <button type="submit" className="primary" disabled={busy || transactions.busy || !transactions.canCreateNewMarket || (attemptId !== null && transactions.isCreationPending(attemptId)) || Boolean(rangeError || delegateDraft.error)}>{busy ? 'Preparing market…' : !wallet.address ? 'Connect to create' : wallet.isSigna ? 'Use external wallet to create' : transactions.pending ? 'Review new market' : 'Review market'}</button>
+        <button type="submit" className="primary" disabled={running || Boolean(rangeError || delegateDraft.error)}>{preparing ? 'Preparing market…' : !wallet.address ? 'Connect to create' : wallet.isSigna ? 'Use external wallet to create' : 'Review market'}</button>
         <button type="button" disabled={!draft.definition} onClick={() => draft.definition && downloadJson(draft.definition, 'metalog-market.json')}>Download definition</button>
       </div>
-      {transactions.pending && <p className="hint" role="status">{transactions.canCreateNewMarket ? 'A previous transaction is still unresolved. This creates a separate market and keeps the earlier transaction available to check.' : 'An earlier transaction could not be identified. Check it before creating another market.'} <a href="#transaction-status">View pending transaction</a></p>}
-      {attemptId && transactions.isCreationPending(attemptId) && <button type="button" disabled={busy || transactions.busy} onClick={() => setAttemptId(null)}>Create another market</button>}
       {(error || (showValidation && draft.error && draft.error !== rangeError && draft.error !== delegateDraft.error && draft.error !== priceError)) && <p className="error" role="alert" style={{ marginTop: 14 }}>{error || draft.error}</p>}
     </div>
   </form>

@@ -10,7 +10,7 @@ let callbackResolved = false
 async function complete() {
   const callback = walletCallbackUrl()
   const [{ deliverCenterCallback, completeCenterCallback }, runtime] = await Promise.all([
-    import('@bananapus/nana-sdk-connect/core'), import('@/lib/wallet-signa'),
+    import('@me.jango/signa/core'), import('@/lib/wallet-signa'),
   ])
   if (!callbackResolved && new URL(callback).search && await deliverCenterCallback(callback, { window })) {
     callbackResolved = true

@@ -49,6 +49,8 @@ test('crowd activity lists entries and exits; an opened entry shows its checked 
   await page.getByRole('tab', { name: /^Market/ }).click()
   const feed = page.getByRole('region', { name: 'Activity', exact: true })
   const rows = feed.getByRole('listitem')
+  // Older activity loads as the end of the list nears the screen; on a phone that takes a scroll.
+  await feed.scrollIntoViewIfNeeded()
   await expect(rows).toHaveCount(3)
   await expect(feed.getByRole('button', { name: /activity|earlier/i })).toHaveCount(0)
   await expect(rows.nth(0)).toContainText('exited with 1 position')

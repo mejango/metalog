@@ -10,7 +10,8 @@ import { forecastSIPmath } from '@/lib/sipmath'
 import { orderReturns } from '@/domain/book'
 import { useLiveOutcome } from '@/lib/live-outcome'
 import { useWallet } from '@/providers/Providers'
-import { usePreparedWrite, useTransactions } from '@/providers/Transactions'
+import { usePreparedWrite } from '@/providers/Transactions'
+import { marketIntent } from '@/lib/transaction'
 import { PositionChart } from './PositionChart'
 
 const COEFFICIENT_LABELS = ['Median', 'Base spread', 'Tail asymmetry', 'Middle spread', 'Shape asymmetry', 'Tail spread']
@@ -41,8 +42,7 @@ export function ForecastEditor({ definition, market, current = true, onSubmitted
   const [quantities, setQuantities] = useState<string[] | null>(null)
   const [referenceCurve, setReferenceCurve] = useState(() => coefficientsFromMoments(0, 2))
   const { address, isSigna, connect } = useWallet()
-  const transactions = useTransactions()
-  const { preparing: submitting, error, setError, run } = usePreparedWrite()
+  const { preparing: submitting, running, error, setError, run } = usePreparedWrite()
   const manual = mode === 'ranges'
   const budget = mode === 'coefficients' ? budgets.coefficients : budgets.moments
   const curve = useMemo(() => {
@@ -136,7 +136,7 @@ export function ForecastEditor({ definition, market, current = true, onSubmitted
     if (!market || !model.preview || !curve.coefficients) return
     const { allocation } = model.preview, coefficients = curve.coefficients
     await run(async () => (await import('@/lib/defifa')).prepareEntry(market, allocation, address, coefficients),
-      prepared => transactions.executeMarket(prepared, market), () => onSubmitted?.(), 'Entry could not be prepared.')
+      marketIntent(market), () => onSubmitted?.(), 'Entry could not be prepared.')
   }
   const closed = market && market.stage !== 'entry'
   // After entry, the chart shows the crowd and payout; the checkout stays mounted so a draft survives.
@@ -214,7 +214,7 @@ export function ForecastEditor({ definition, market, current = true, onSubmitted
       </div>}
       {model.error && !stakeError && <p id="forecast-error" className="error" role="alert">{model.error}</p>}
       <div className="actions ticket-actions">
-        {market && <button className="primary" disabled={!current || !model.preview || Boolean(closed) || submitting || transactions.busy || transactions.hasPendingForMarket(market!)} onClick={submit}>
+        {market && <button className="primary" disabled={!current || !model.preview || Boolean(closed) || running} onClick={submit}>
           {submitting ? 'Preparing entry…' : !address ? 'Connect to enter' : isSigna ? 'Use external wallet to enter' : 'Review entry'}
         </button>}
         <button className="quiet" disabled={!model.preview} onClick={() => model.preview && downloadJson(model.preview, 'metalog-forecast.json')}>Download draft</button>

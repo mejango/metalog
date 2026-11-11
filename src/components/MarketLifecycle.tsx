@@ -8,7 +8,8 @@ import { scorecardWeightsFromPercentages } from '@/domain/scorecard'
 import type { LifecycleAction, LifecycleSnapshot, ResultVoters } from '@/lib/defifa-lifecycle'
 import { chainForId } from '@/lib/wallet'
 import { useWallet } from '@/providers/Providers'
-import { usePreparedWrite, useTransactions } from '@/providers/Transactions'
+import { usePreparedWrite } from '@/providers/Transactions'
+import { marketIntent } from '@/lib/transaction'
 import { utcTime } from './MarketFacts'
 import { RangeStrip } from './RangeStrip'
 import { useLiveOutcome } from '@/lib/live-outcome'
@@ -26,7 +27,6 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   scorecardsPaged: boolean
 }) {
   const { address, isSigna, connect } = useWallet()
-  const transactions = useTransactions()
   const { market, positions } = lifecycle
   // Positions to burn per range, per wallet.
   const [selections, setSelections] = useState<Record<string, Record<number, number>>>({})
@@ -41,7 +41,7 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   // Preset markets can read their own result once observation ends; proposing it is one click.
   const observed = useLiveOutcome(market.definition, market.stage === 'settlement' ? 'final' : null)
   const observedRange = observed?.final ? binForOutcome(market.ranges, observed.value) : null
-  const { preparing, error: actionError, run } = usePreparedWrite()
+  const { preparing, running, error: actionError, run } = usePreparedWrite()
   const walletKey = address?.toLowerCase() ?? ''
   const selected = selections[walletKey] ?? {}
   const burning = positions.flatMap(position => {
@@ -50,7 +50,7 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   })
   const burnCount = burning.reduce((sum, position) => sum + position.count, 0)
   const matchingWallet = !!address && lifecycle.account?.toLowerCase() === walletKey
-  const busy = preparing || transactions.busy || transactions.hasPendingForMarket(market)
+  const busy = running
   const canAct = current && matchingWallet && !isSigna && !busy
   const explorer = chainForId(market.chainId).blockExplorers.default.url
   const scoreDraft = useMemo(() => {
@@ -75,7 +75,7 @@ export function MarketLifecycle({ lifecycle, panel, current, loading, error, onR
   async function act(action: LifecycleAction) {
     if (!canAct || !address) return
     await run(async () => (await import('@/lib/defifa-lifecycle')).prepareLifecycleAction(market, action, address),
-      prepared => transactions.executeMarket(prepared, market), () => {
+      marketIntent(market), () => {
         setRowAction(null)
         if (action.kind === 'transfer' || action.kind === 'cash-out') select({})
         onRefresh()

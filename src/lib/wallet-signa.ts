@@ -1,6 +1,6 @@
 'use client'
 
-import { createCenterWalletClient } from '@bananapus/nana-sdk-connect/core'
+import { createCenterWalletClient } from '@me.jango/signa/core'
 import { SIGNA_AUDIENCE, SIGNA_ISSUER, walletReturnPath } from './wallet'
 const returnKey = 'metalog:signa:return:v1'
 let wallet: ReturnType<typeof createCenterWalletClient> | undefined
