@@ -9,7 +9,7 @@ npm ci
 npm run dev
 ```
 
-Open http://127.0.0.1:3020. Requires Node 22.16 or later. The example curve works without a wallet or RPC. This directory is an independent Next.js app.
+Open http://127.0.0.1:3020. Requires Node 26.13.1 or later; `nvm use` selects the pinned release. The example curve works without a wallet or RPC. This directory is an independent Next.js app.
 
 For design work on live games, run `npm run dev:live`. It serves `/api/markets` from metalog.money, because local server reads from Juicebox Center hit its public-origin rate limit. Local API changes do not apply in this mode.
 
