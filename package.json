@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Probability markets on Defifa.",
   "engines": {
-    "node": ">=22.16.0"
+    "node": ">=26.13.1"
   },
   "scripts": {
     "dev": "next dev --webpack --hostname 127.0.0.1 --port 3020",
