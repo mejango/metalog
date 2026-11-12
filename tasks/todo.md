@@ -256,8 +256,8 @@ Review: two local lines remain, each needed by an SDK-path test that fails witho
 
 - [x] Inventory current main, instructions and runtime owners.
 - [x] Update runtime pins and active setup documentation.
-- [ ] Validate dependencies unchanged and run existing app checks.
-- [ ] Open reviewable PR and report exact head and verification.
+- [x] Validate dependencies unchanged and run existing app checks.
+- [x] Open reviewable PR and report exact head and verification.
 
 ## Review
 Pending implementation and checks.
@@ -265,3 +265,5 @@ Pending implementation and checks.
 Runtime pin inventory resolved: official Node26.13.1 Alpine multiarch index sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 verified from registry2026-11-12T12:13:46UTC. Both Docker stages pin this index; local .nvmrc selects26.13.1 and the existing minimum-engine style now starts at26.13.1. No independently pinned npm version exists, so validation uses bundled npm11.20.0.
 
 Exact-lock npm ci completed successfully with Node26.13.1 and bundled npm11.20.0. Post-install comparison confirms no dependency lock entries changed. Independent runtime-diff review found no actionable issues. Full application checks are awaiting the coordinated local resource slot; no GitHub Actions workflow exists in this repository.
+
+Final verification: Node 26.13.1/npm 11.20.0 exact-lock installation, ESLint, typecheck, all 181 unit tests across 24 files and production Next build passed. The existing Playwright production suite passed 83 tests with one existing mobile-focus skip in 1.7 minutes, using CI=true to require a fresh standalone server and unchanged workers/deadlines. The server was cleaned up when the suite finished. The dependency lock differs only in the root Node engine. Independent runtime diff review found no actionable findings; git diff --check passed. PR9 carries this runtime-only change. These are Darwin application checks plus verification of the official Alpine image digest; Linux container execution and live hosting rollout are separate root-coordinated checks. Evidence: /private/tmp/node26131-metalog-install.log, node26131-metalog-check.log and node26131-metalog-browser.log.
