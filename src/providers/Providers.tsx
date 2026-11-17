@@ -46,7 +46,9 @@ export function useWallet() {
 
 export function Providers({ children }: PropsWithChildren) {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: {
-    staleTime: 30_000, gcTime: 600_000, retry: 1, refetchOnWindowFocus: false,
+    staleTime: 30_000, gcTime: 600_000, refetchOnWindowFocus: false,
+    // One retry for a one-off failure; a rate-limited read waits for its next refresh.
+    retry: (failures, error) => failures < 1 && (error as { status?: number }).status !== 429,
   } } }))
   const [chooser, setChooser] = useState<ConnectOptions | null>(null)
   const connect = useCallback((options?: ConnectOptions) => setChooser(options ?? {}), [])

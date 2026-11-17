@@ -8,7 +8,7 @@ const EXCHANGE = 'https://api.exchange.coinbase.com/products'
 async function candleOpen(product: string, at: number) {
   const iso = (seconds: number) => new Date(seconds * 1000).toISOString()
   const response = await fetch(`${EXCHANGE}/${product}/candles?granularity=60&start=${iso(at)}&end=${iso(at + 60)}`)
-  if (!response.ok) throw new Error('Candle unavailable')
+  if (!response.ok) throw Object.assign(new Error('Candle unavailable'), { status: response.status })
   const candle = (await response.json() as number[][]).find(row => row[0] === at)
   if (!candle || !(candle[3] > 0)) throw new Error('Candle unavailable')
   return candle[3]
@@ -25,13 +25,14 @@ export function useLiveOutcome(definition: MarketDefinition, mode: 'live' | 'fin
   const enabled = mode !== null && product !== null
   // The chain's stage says whether observation has ended; the wall clock never decides it here.
   const ended = mode === 'final'
-  const open = useQuery({ queryKey: ['candle-open', product, start], enabled, staleTime: Infinity, retry: 1, queryFn: () => candleOpen(product!, start) }).data
-  const close = useQuery({ queryKey: ['candle-open', product, end], enabled: enabled && ended, staleTime: Infinity, retry: 1, queryFn: () => candleOpen(product!, end) }).data
+  const open = useQuery({ queryKey: ['candle-open', product, start], enabled, staleTime: Infinity, queryFn: () => candleOpen(product!, start) }).data
+  const close = useQuery({ queryKey: ['candle-open', product, end], enabled: enabled && ended, staleTime: Infinity, queryFn: () => candleOpen(product!, end) }).data
   const price = useQuery({
-    queryKey: ['ticker', product], enabled: enabled && !ended, refetchInterval: 15_000, retry: 1,
+    queryKey: ['ticker', product], enabled: enabled && !ended, refetchInterval: 30_000,
     queryFn: async () => {
       const response = await fetch(`${EXCHANGE}/${product}/ticker`)
-      const value = Number(response.ok ? (await response.json()).price : NaN)
+      if (!response.ok) throw Object.assign(new Error('Price unavailable'), { status: response.status })
+      const value = Number((await response.json()).price)
       if (!(value > 0)) throw new Error('Price unavailable')
       return value
     },

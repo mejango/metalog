@@ -7,12 +7,12 @@ export function useEthUsd(): number | undefined {
     queryKey: ['eth-usd'],
     queryFn: async () => {
       const response = await fetch('https://api.coinbase.com/v2/prices/ETH-USD/spot')
-      if (!response.ok) throw new Error('ETH price unavailable')
+      if (!response.ok) throw Object.assign(new Error('ETH price unavailable'), { status: response.status })
       const price = Number((await response.json()).data.amount)
       if (!(price > 0)) throw new Error('ETH price unavailable')
       return price
     },
-    staleTime: 60_000, refetchInterval: 60_000, retry: 1,
+    staleTime: 60_000, refetchInterval: 60_000,
   }).data
 }
 
