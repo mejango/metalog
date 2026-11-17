@@ -73,6 +73,47 @@ test('in play, a preset market marks where its outcome stands now', async ({ pag
   await expect(page.locator('.chart-now text')).toHaveText('Now +0.5% | 3 positions here')
 })
 
+const preset = { ...snapshot, market: { ...snapshot.market,
+  definition: { ...snapshot.market.definition, source: 'Coinbase Exchange ETH-USD 60-second candles: https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=60' } } }
+
+test('in play, the latest price is read again every 30 seconds', async ({ page }) => {
+  await page.clock.install()
+  await page.route('**/api.coinbase.com/**', route => route.abort())
+  const start = preset.market.definition.entryClosesAt
+  await page.route('**/api.exchange.coinbase.com/products/ETH-USD/candles?*', route => route.fulfill({ json: [[start, 1, 1, 2000, 1, 1]] }))
+  let reads = 0
+  await page.route('**/api.exchange.coinbase.com/products/ETH-USD/ticker', route => { reads++; return route.fulfill({ json: { price: '2010' } }) })
+  await page.route('**/api/markets/84532/47/play?*', route => route.fulfill({ json: preset }))
+  await page.goto('/markets/84532/47')
+  await expect(page.locator('.chart-now text')).toContainText('Now +0.5%')
+  await page.clock.fastForward(20_000)
+  await page.waitForTimeout(500)
+  expect(reads).toBe(1)
+  await page.clock.fastForward(11_000)
+  await expect.poll(() => reads).toBe(2)
+})
+
+test('a rate-limited price read is not retried', async ({ page }) => {
+  await page.clock.install()
+  await page.route('**/api.coinbase.com/**', route => route.abort())
+  await page.route('**/api.exchange.coinbase.com/products/ETH-USD/candles?*', route => route.abort())
+  const reads = { limited: 0, failed: 0 }
+  await page.route('**/api.exchange.coinbase.com/products/ETH-USD/ticker', route => { reads.limited++; return route.fulfill({ status: 429, json: {} }) })
+  await page.route('**/api/markets/84532/47/play?*', route => route.fulfill({ json: preset }))
+  await page.goto('/markets/84532/47')
+  await expect.poll(() => reads.limited).toBe(1)
+  await page.clock.fastForward(5_000)
+  await page.waitForTimeout(500)
+  expect(reads.limited).toBe(1)
+
+  // Any other failure still gets its one retry.
+  await page.route('**/api.exchange.coinbase.com/products/ETH-USD/ticker', route => { reads.failed++; return route.fulfill({ status: 500, json: {} }) })
+  await page.clock.fastForward(26_000)
+  await expect.poll(() => reads.failed).toBe(1)
+  await page.clock.fastForward(2_000)
+  await expect.poll(() => reads.failed).toBe(2)
+})
+
 test('in play, the Market tab adds an order book that cannot trade without a venue', async ({ page }) => {
   await page.route('**/api.coinbase.com/**', route => route.abort())
   await page.route('**/api/markets/84532/47/play?*', route => route.fulfill({ json: { ...snapshot, market: { ...snapshot.market,

@@ -1,3 +1,21 @@
+# Lean network requests (2026-11-16)
+
+Resources: `/Users/jango/Documents/jb/v6/evm/AGENTS.md`, `/Users/jango/Documents/jb/v6/evm/workflow/ponytail/SKILL.md`, `/Users/jango/Documents/jb/v6/evm/docs/PLAN_REFINEMENT.md`; local `AGENTS.md`, `README.md`. Worktree `.worktrees/lean-metalog` on `perf/lean-network`.
+
+## Plan refinement
+- **Objective:** A market page asks for each thing once, refreshes about every 30 seconds, and never retries a rate-limited read. No read that guards a write changes.
+- **System fit:** Only display reads change: the Coinbase ticker (`src/lib/live-outcome.ts`), the ETH price (`src/lib/eth-usd.ts`) and the Query defaults in `src/providers/Providers.tsx`. The play snapshot, cash-out quote, write verification and receipts are unaffected.
+- **Reuse and simplicity:** Reuse TanStack Query's `refetchInterval` and `retry` options; one retry rule lives in the Query defaults instead of per-query copies. No new module or dependency.
+- **Evidence and unknowns:** Audit at origin/main 251b26e: ticker 4/min, play 2/min (plus the activity reread it triggers), ETH price 1/min, all paused while hidden by Query. The activity reread per snapshot stays because the indexer can lag the chain; a supply-change gate could miss rows.
+- **Verification:** Browser tests with a controlled clock: the ticker is read once in 20 s and again by 31 s, and a 429 ticker answer is asked once. Then `npm run check` and the full browser suite on port 3195.
+- **Resource budget:** Three source files, one test file, one config line for the port. Replan if a consumer of the ticker needs a pace below 30 s.
+
+- [x] Ticker refresh every 30 s
+- [x] No retry after a 429 (one retry otherwise)
+- [x] Browser tests, `npm run check`, full browser suite
+
+Review: `npm run check` exits 0 (lint, typecheck, 181 unit tests, build). Browser suite on port 3195: 87 passed, 1 skipped. Both new tests fail with the source change reverted. Left as is: the play snapshot at 30 s, the ETH price at 60 s, the cash-out quote per snapshot and the activity reread per snapshot.
+
 # Market page design pass (stage focus, Seurat palette)
 
 Resources: `/Users/jango/Documents/jb/v6/evm/AGENTS.md`, `tasks/lessons.md`, `workflow/ponytail/SKILL.md`, `docs/PLAN_REFINEMENT.md`; local `AGENTS.md`, `docs/DESIGN.md`. Isolated worktree `../metalog-design` on `design/market-stage-focus` from e552516; dirty `main` checkout untouched.
