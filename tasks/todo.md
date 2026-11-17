@@ -1,3 +1,21 @@
+# SDK 6.10.2 (2026-11-17)
+
+Resources: `/Users/jango/Documents/jb/v6/evm/AGENTS.md`, `/Users/jango/Documents/jb/v6/evm/workflow/ponytail/SKILL.md`, `/Users/jango/Documents/jb/v6/evm/docs/PLAN_REFINEMENT.md`; local `AGENTS.md`, `README.md`. Worktree `.worktrees/lean-metalog` on `chore/sdk-6-10-2` from origin/main 03d77f1.
+
+## Plan refinement
+- **Objective:** Metalog runs on `@bananapus/nana-sdk-core` 6.10.2 (from 6.3.1) so held writes are read once a poll, a held Safe proposal asks Safe's service once a look, and a hidden tab stays quiet. No Metalog behavior of its own changes.
+- **System fit:** The SDK owns send, sign and the held-write follower; Metalog imports `review`, `review/react`, `jbcenter`, `chains`, `testing` and the metadata encoders. Market reads, calldata, review text and receipts are unaffected.
+- **Reuse and simplicity:** Version and lockfile only unless a check fails. No Metalog-specific SDK option, no compatibility code. Metalog's indexer reads use its own server-side `src/lib/bendystraw.ts`, not the SDK's `requestBendystraw`, so the SDK's one 429 retry does not stack on the Query retry rule in `Providers.tsx`.
+- **Evidence and unknowns:** SDK changelog 6.4.0 to 6.10.1 and the 6.10.2 changeset (`.worktrees/sdk-safe-polling/.changeset/one-read-per-look.md`): additions, plus signature changes to `waitForSafeExecutionHash` and `lookAtSafeProposalEnd`, neither imported here. Registry integrity of 6.10.2 is in the lockfile. Not exercised: a real Safe proposal or a real hidden tab against live services.
+- **Verification:** `npm run check` on Node 26.13.1, then the full browser suite with `PORT=3195`.
+- **Resource budget:** One install, one check, one browser run. Replan if a test that advances a held-write view fails (the follower uses `setTimeout` now) or a type error needs more than a call-site change.
+
+- [x] Bump and install with npm 12
+- [x] `npm run check`
+- [x] Browser suite on port 3195
+
+Review: version and lockfile only; no source or test change was needed. `npm run check` exits 0 on Node 26.13.1 (lint, typecheck, 181 unit tests, build). Browser suite on port 3195: 87 passed, 1 skipped. Not exercised: a held Safe proposal or a hidden tab against live services.
+
 # Lean network requests (2026-11-16)
 
 Resources: `/Users/jango/Documents/jb/v6/evm/AGENTS.md`, `/Users/jango/Documents/jb/v6/evm/workflow/ponytail/SKILL.md`, `/Users/jango/Documents/jb/v6/evm/docs/PLAN_REFINEMENT.md`; local `AGENTS.md`, `README.md`. Worktree `.worktrees/lean-metalog` on `perf/lean-network`.
